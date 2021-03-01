@@ -53,7 +53,7 @@ class weights(object):
         self.cd = cosmo_default
         self.pre = prefix
         if (k_arr is None) or (a_arr is None):
-            raise ValueError("`k_arr` and `a_arr` should be arrays")
+            raise ValueError("`k_arr` and `a_arr` should be array-like")
         self.k_arr = k_arr
         self.a_arr = a_arr
         self.pars = list(self.priors.keys())
@@ -77,13 +77,16 @@ class weights(object):
 
     def gradient(self, arr, key):
         kw = self.cd.copy()  # clean copy to avoid surprises
-        grads = []
-        for val in tqdm(arr, desc=key):
-            kw.update({key: val})
+        lPk_full = np.zeros((self.interp_pts, len(self.a_arr), len(self.k_arr)))
+        for i, val in enumerate(tqdm(arr, desc=key)):
+            kw[key] = val
             cosmo = ccl.Cosmology(**kw)
-            Pk = weights.linear_matter_power(cosmo, self.k_arr, self.a_arr)
-            grads.append(np.max(np.gradient(np.log10(Pk))))
-        grads = np.array(grads)
+            lPk_full[i] = np.log10(weights.linear_matter_power(cosmo,
+                                                               self.k_arr,
+                                                               self.a_arr))
+        grads = np.max(np.gradient(lPk_full, axis=0), axis=(1,2))
+        dx = np.gradient(arr)
+        grads /= dx
         return grads
 
     def get_gradients(self, save=True, output=True, overwrite=False):
@@ -117,7 +120,7 @@ class weights(object):
         return np.sum(segments, axis=-1).squeeze()
 
     def get_weights(self, ref=100, save=True, output=True, overwrite=False):
-        """Calculate percentage re-distribution of sample points."""
+        """Calculate re-distribution weights of the sample points."""
         f_weights = "_".join(filter(None, ["res/weights", self.pre])) + ".npz"
         gradients = self.get_gradients(save=save,
                                         output=output,
