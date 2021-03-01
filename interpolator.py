@@ -14,7 +14,40 @@ class interpolator(object):
     """
     Interpolator of the cosmological linear matter power spectrum.
 
-    #TODO: a few more words
+    Nodes for the cosmological hypercube are computed using weights.
+    Weights aim to increase efficiency by allocating more samples
+    to the parameters that change more and/or have more feautures.
+    This is calculated by `weights.weights` in the following way:
+        - Compute the partial derivative of `P(k,a)` with respect
+        to each cosmological parameter, at every `(k,a)`.
+        - Define the 'effective' derivative as the maximum of that.
+        - Calculate the normalized arc length to upsample hilly
+        hypersurfaces.
+        - Define this as the weight. Normalize for the target
+        number of samples.
+
+    The power spectrum is computed at the nodes and interpolated
+    using radial basis functions (RBFs). These are functions whose
+    value depends only on the distance from a reference point (node).
+
+    Euclidean metric is used to calculate distance, because the
+    cosmological parameters are independent (enough) from one another.
+
+    The used RBF can be changed to any of the functions outlined in
+    `scipy.interpolate.Rbf`; however, `gaussian` is a good choice
+    as it is similar to a KDE in multiple dimensions.
+    Use `linear` for calculation speed-up.
+
+    For `gaussian`, `multiquadric`, and `inverse` (quadric) RBFs,
+    the hyperparameter `epsilon` controls the width of the kernel.
+
+    Class method `interpolator.linear_matter_power` ultimately has
+    the same function call as `pyccl.linear_matter_power`. That is
+    to introduce compatibility; however, serious speed-up can be
+    achieved if multiple cosmological proposals are made directly into
+    the `interpolator.F` attribute rather than calling it iteratively.
+    This is realized in `interpolator.callF`.
+
 
     Parameters
     ----------
@@ -38,12 +71,17 @@ class interpolator(object):
         dimensions are weihted, or if the `n-th` root of `samples`,
         where `n` is the number of cosmological parameters
         is not an integer.
-    interpf : ``str``
-        The radial basis function. See `scipy.interpolate.Rbf`.
     check_cosmo : ``bool``
         Check that every ``pyccl.Cosmology`` object passed in the
         interpolator is compatible with the interpolation.
         Save time by setting it to `False`, but do so at your own risk!
+    interpf : ``str``
+        The radial basis function. See `scipy.interpolate.Rbf`.
+    epsilon : ``float``
+        Adjustment knob for gaussian and multiquadric functions.
+        A good start for cosmological interpolation is 50x the
+        average distance between the nodes.
+        See `scipy.interpolate.Rbf`.
     weigh_dims : ``bool``
         Distribute available samples along the cosmological
         dimensions using weights, according to how much `P(k,a)`
@@ -59,12 +97,31 @@ class interpolator(object):
         Overwrite any saved output. Defaults to `True`.
     save: ``bool``
         Save the weights in compressed `.npz` format.
+
+    Attributes
+    ----------
+    All arguments become class attributes.
+    Additional attributes are listed below.
+    pars : ``list`` of ``str``
+        Names of the free cosmological parameters.
+    kpts : ``float``
+        Number of wavenumber points.
+    apts : ``float``
+        Number of scale factor points.
+    weights : ``list``
+        Number of sampling points per cosmological parameter.
+    points : ``list`` of ``numpy.array``
+        Sampling points of each parameter.
+    pos : ``numpy.array`` (samples_effective, len(pars))
+        Coordinates of the nodal points.
+    F : ``numpy.array`` of ``scipy.interpolate.rbf.Rbf`` (apts, kpts)
+        Array containing the interpolators for each (k, a) combination.
     """
 
     def __init__(self, priors, cosmo_default=None,
                  k_arr=None, a_arr=None,
-                 samples=50, interpf="multiquadric",
-                 check_cosmo = True,
+                 samples=50, check_cosmo=True,
+                 interpf="gaussian", epsilon=None,
                  weigh_dims=True, wpts=None,
                  prefix="", overwrite=True, save=True):
         # cosmo params
@@ -73,7 +130,7 @@ class interpolator(object):
         self.cosmo_default = cosmo_default
         if self.cosmo_default is None:
             print("Fixed cosmological parameters from Planck 2018.")
-            self.cd = interpolator.Planck18()
+            self.cosmo_default = interpolator.Planck18()
         # k, a
         self.k_arr = np.sort(k_arr)
         self.kpts = len(self.k_arr)
@@ -81,8 +138,12 @@ class interpolator(object):
         self.apts = len(self.a_arr)
         # interp
         self.samples = samples
-        self.interpf = interpf
         self.check_cosmo = check_cosmo
+        self.interpf = interpf
+        self.epsilon = epsilon
+        if self.interpf not in ["multiquadric", "inverse", "gaussian"]:
+            warnings.warn("epsilon not defined for function %s" % self.interpf)
+            self.epsilon = None
         self.weigh_dims = weigh_dims
         # weights
         self.wpts = wpts
@@ -118,7 +179,7 @@ class interpolator(object):
         in each dimension.
         """
         if self.weigh_dims:
-            W = wts(self.priors, self.cd,
+            W = wts(self.priors, self.cosmo_default,
                     k_arr=self.k_arr, a_arr=self.a_arr,
                     wpts=self.wpts, prefix=self.pre)
             weights_dict = W.get_weights(ref=self.samples,
@@ -140,8 +201,8 @@ class interpolator(object):
     def Pka(self):
         """Compute `P(k,a)` at each cosmological node."""
         Pk = np.zeros((np.product(self.weights), self.apts, self.kpts))
-        for i, p in enumerate(tqdm(self.pos, desc="Sampling P(k) grid")):
-            kw = self.cd.copy()
+        for i, p in enumerate(tqdm(self.pos, desc="Sampling P(k,a) grid")):
+            kw = self.cosmo_default.copy()
             kw.update(dict(zip(self.pars, p)))
             cosmo = ccl.Cosmology(**kw)
             Pk[i] = wts.linear_matter_power(cosmo, self.k_arr, self.a_arr)
@@ -159,11 +220,11 @@ class interpolator(object):
         To achieve smoother interpolation over the extent of the
         power spectrum, we interpolate `log_10(Pk)`.
         """
-        print("Interpolating...")
         lPk = np.log10(Pk).reshape(*np.r_[self.weights, self.apts*self.kpts])
         self.F = [Rbf(*np.c_[self.pos, lPk[..., i].flatten()].T,
-                      function=self.interpf)
-                  for i in range(self.apts*self.kpts)]
+                      function=self.interpf,
+                      epsilon=self.epsilon)
+                  for i in tqdm(range(self.apts*self.kpts), desc="Interpolating")]
         self.F = np.array(self.F).reshape((self.apts, self.kpts))
 
     def linear_matter_power(self, cosmo, k_arr, a_arr):
@@ -172,9 +233,9 @@ class interpolator(object):
         """
         # check if `cosmo` is compatible with interpolation
         if self.check_cosmo:
-            fixed = list(set(self.cd.keys() - set(self.pars)))
+            fixed = list(set(self.cosmo_default.keys() - set(self.pars)))
             for par in fixed:
-                if cosmo[par] != self.cd[par]:
+                if cosmo[par] != self.cosmo_default[par]:
                     raise ValueError(textwrap.fill(textwrap.dedent("""
             Cosmological parameter %s not compatible with interpolation.
             """ % par)))
