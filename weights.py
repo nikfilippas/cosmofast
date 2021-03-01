@@ -50,7 +50,7 @@ class weights(object):
                  k_arr=None, a_arr=None, *,
                  wpts=16, prefix=""):
         self.priors = priors
-        self.cd = cosmo_default
+        self.cosmo_default = cosmo_default
         self.pre = prefix
         if (k_arr is None) or (a_arr is None):
             raise ValueError("`k_arr` and `a_arr` should be array-like")
@@ -76,7 +76,7 @@ class weights(object):
         return Pk.squeeze()
 
     def gradient(self, arr, key):
-        kw = self.cd.copy()  # clean copy to avoid surprises
+        kw = self.cosmo_default.copy()  # clean copy to avoid surprises
         lPk_full = np.zeros((self.wpts, len(self.a_arr), len(self.k_arr)))
         for i, val in enumerate(tqdm(arr, desc=key)):
             kw[key] = val
