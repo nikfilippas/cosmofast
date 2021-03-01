@@ -1,11 +1,14 @@
 """
 Create a cosmological linear matter power spectrum interpolator.
 """
+import textwrap
+import warnings
+from tqdm import tqdm
 import numpy as np
 import pyccl as ccl
-from tqdm import tqdm
-import textwrap
+from scipy.interpolate import Rbf
 from weights import weights as wts
+
 
 class interpolator(object):
     """
@@ -28,24 +31,26 @@ class interpolator(object):
         Scale factors to sample at.
         If `None`, use arguments `amin`, `amax`, `apts`
         to construct the scale factor array.
-    amin, amax : ``float``
-        Scale factor boundaries.
-    apts : ``int``
-        Number of scale factor sampling points.
-    lkmin, lkmax: ``float``
-        Base-10 log of wavenumber sampling points.
-    kpts : ``int``
-        Number of wavenumber sampling points.
     samples : ``int``
         Target number of interpolation nodes.
         The actual number of samples will vary (always greater,
-        but close to the target number) because the relative
-        sample sizes along each cosmological dimension are weighted.
-    method : ``str``
-        Interpolation method. Supported are {'linear', 'rbf'}.
-        See `scipy.interpolate` for more information.
-        Default is `rbf`.
-    interp_pts : ``int``
+        but close to the target number) if the cosmological
+        dimensions are weihted, or if the `n-th` root of `samples`,
+        where `n` is the number of cosmological parameters
+        is not an integer.
+    interpf : ``str``
+        The radial basis function. See `scipy.interpolate.Rbf`.
+    check_cosmo : ``bool``
+        Check that every ``pyccl.Cosmology`` object passed in the
+        interpolator is compatible with the interpolation.
+        Save time by setting it to `False`, but do so at your own risk!
+    weigh_dims : ``bool``
+        Distribute available samples along the cosmological
+        dimensions using weights, according to how much `P(k,a)`
+        changes in the interval of the passed prior.
+        Defaults to `True`. Will independently sample each
+        cosmological dimension.
+    wpts : ``int``
         Initial number of sampling points along each
         cosmological dimension.
     prefix : ``str``
@@ -56,85 +61,47 @@ class interpolator(object):
         Save the weights in compressed `.npz` format.
     """
 
-    def __init__(self, priors, cosmo_default=None, *,
-                 k_arr = None, a_arr=None,
-                 amin=0.01, amax=1, apts=2048,
-                 lkmin=-4, lkmax=2, kpts=4096,
-                 samples=50, method="rbf",
-                 interp_pts=16,
+    def __init__(self, priors, cosmo_default=None,
+                 k_arr=None, a_arr=None,
+                 samples=50, interpf="multiquadric",
+                 check_cosmo = True,
+                 weigh_dims=True, wpts=None,
                  prefix="", overwrite=True, save=True):
+        # cosmo params
         self.priors = priors
-        if cosmo_default is None:
+        self.pars = self.priors.keys()
+        self.cosmo_default = cosmo_default
+        if self.cosmo_default is None:
+            print("Fixed cosmological parameters from Planck 2018.")
             self.cd = interpolator.Planck18()
-        else:
-            self.cd = cosmo_default
-        self.k_arr = k_arr
-        self.a_arr = a_arr
+        # k, a
+        self.k_arr = np.sort(k_arr)
+        self.kpts = len(self.k_arr)
+        self.a_arr = np.sort(a_arr)
+        self.apts = len(self.a_arr)
+        # interp
         self.samples = samples
-        self.method = method
+        self.interpf = interpf
+        self.check_cosmo = check_cosmo
+        self.weigh_dims = weigh_dims
+        # weights
+        self.wpts = wpts
+        if self.weigh_dims and (self.wpts is None):
+            warnings.warn("wpts not set; defaulting to 16 per dimension")
+            self.wpts = 16
+        # I/O
         self.pre = prefix
-
-        # build z-space and k-space
-        if self.k_arr is not None:
-            self.k_arr = np.atleast_1d(self.k_arr)
-            self.lkmin, self.lkmax = np.log10(self.k_arr.take([0, -1]))
-            self.kpts = len(self.k_arr)
-        else:
-            self.lkmin, self.lkmax, self.kpts = lkmin, lkmax, kpts
-            # self.k_arr = np.logspace(self.lkmin, self.lkmax, self.kpts)
-            self.k_arr = self.get_k_arr()
-
-        if a_arr is not None:
-            self.a_arr = np.atleast_1d(self.a_arr)
-            self.amin, self.amax = self.a_arr.take([0, -1])
-            self.apts = len(self.a_arr)
-        else:
-            self.amin, self.amax, self.apts = amin, amax, apts
-            self.a_arr = np.linspace(self.amin, self.amax, self.apts)
+        self.overwrite = overwrite
+        self.save = save
 
         # calculate parameter weights
-        self.pars = self.priors.keys()
-        W = wts(self.priors, self.cd,
-                k_arr=self.k_arr, a_arr=self.a_arr,
-                interp_pts=interp_pts, prefix=self.pre)
-        weights_dict = W.get_weights(ref=self.samples,
-                                     output=True,
-                                     save=save,
-                                     overwrite=overwrite)
-        self.weights = np.array([weights_dict[par] for par in self.pars])
-
+        self.get_weights()
         # build cosmological parameter space
-        points = [np.linspace(*priors[key], ww)
-                       for key, ww in zip(self.pars, self.weights)]
-        mg = np.meshgrid(*points, indexing="ij")
-
-        # extract parameter coordinates
-        self.pos = np.vstack(list(map(np.ravel, mg))).T
-
+        self.get_nodes()
         # sample parameter space at weighted axes
-        Pk = np.zeros((np.product(self.weights),
-                       len(self.a_arr),
-                       len(self.k_arr)))
-        for i, p in enumerate(tqdm(self.pos, desc="Sampling P(k) grid")):
-            kw = self.cd.copy()
-            kw.update(dict(zip(self.pars, p)))
-            cosmo = ccl.Cosmology(**kw)
-            Pk[i] = wts.linear_matter_power(cosmo, self.k_arr, self.a_arr)
-        Pk = Pk.reshape(*np.r_[self.weights, len(self.a_arr), len(self.k_arr)])
-
-        # `k_arr` and `P(k)` behave better in logspace
-        if self.method == "linear":
-            from scipy.interpolate import RegularGridInterpolator
-            points.extend([self.a_arr, np.log10(self.k_arr)])
-            self.F = RegularGridInterpolator(points, np.log10(Pk))
-        elif self.method == "rbf":
-            from scipy.interpolate import Rbf
-            mg = np.meshgrid(*points, indexing="ij")
-            pos = np.vstack(list(map(np.ravel, mg))).T
-            xs = np.c_[pos, np.log10(Pk).flatten()]
-            self.F = Rbf(*xs.T)
-        else:
-            raise ValueError("Interpolation method not recognized.")
+        Pk = self.Pka()
+        # interpolate
+        self.interpolate(Pk)
 
     @classmethod
     def Planck18(interpolator):
@@ -146,80 +113,83 @@ class interpolator(object):
                  "n_s"     : 0.9667}
         return cosmo
 
-    @classmethod
-    def repeat(interpolator, f, n, arg):
-        """Repeat function n times on argument."""
-        from functools import reduce
-        def rfunc(arg):
-            return reduce(lambda x, _: f(x), range(n), arg)
-        return rfunc(arg)
-
-    @classmethod
-    def get_BAO_idx(interpolator, Pk):
-        """Determine the scales of the acoustic peaks."""
-        d2lPk = interpolator.repeat(np.gradient, 2, np.log10(Pk))
-        d2lPk = d2lPk[4: -4]  # remove boundary effects
-        idx = np.where(np.fabs(d2lPk) > np.max(d2lPk)/5)[0].take([0, -1])
-        idx += 4  # back to original indexing
-        return idx
-
-    def get_k_arr(self):
+    def get_weights(self):
+        """Calculate how the available samples are distributed
+        in each dimension.
         """
-        Construct k-array of varying sampling densities.
+        if self.weigh_dims:
+            W = wts(self.priors, self.cd,
+                    k_arr=self.k_arr, a_arr=self.a_arr,
+                    wpts=self.wpts, prefix=self.pre)
+            weights_dict = W.get_weights(ref=self.samples,
+                                         output=True,
+                                         save=self.save,
+                                         overwrite=self.overwrite)
+            self.weights = np.array([weights_dict[par] for par in self.pars])
+        else:
+            w = np.ceil(self.samples**(1/len(self.pars)))
+            self.weights = np.repeat(w, len(self.pars))
 
-        Split P(k) in 3 regions: (start, BAO, end).
-        Upsample regions of the power spectrum with many features
-        and downsample uninteresting regions.
+    def get_nodes(self):
+        """Calculate the coordinates of the nodal points."""
+        self.points = [np.linspace(*self.priors[key], ww)
+                       for key, ww in zip(self.pars, self.weights)]
+        mg = np.meshgrid(*self.points, indexing="ij")
+        self.pos = np.vstack(list(map(np.ravel, mg))).T
 
-        Choice of scale factor does not matter because acoustic
-        scales remain the same throughout structure growth.
+    def Pka(self):
+        """Compute `P(k,a)` at each cosmological node."""
+        Pk = np.zeros((np.product(self.weights), self.apts, self.kpts))
+        for i, p in enumerate(tqdm(self.pos, desc="Sampling P(k) grid")):
+            kw = self.cd.copy()
+            kw.update(dict(zip(self.pars, p)))
+            cosmo = ccl.Cosmology(**kw)
+            Pk[i] = wts.linear_matter_power(cosmo, self.k_arr, self.a_arr)
+        Pk = Pk.reshape(*np.r_[self.weights, self.apts, self.kpts])
+        return Pk
 
-        #TODO: see how BAO peaks change with given priors
-        and sacrifice some samples in those regions as well.
+    def interpolate(self, Pk):
         """
-        kw = self.cd.copy()
-        cosmo = ccl.Cosmology(**kw)
-        lk = np.linspace(self.lkmin, self.lkmax, self.kpts)
+        Interpolate `P(k,a)`.
 
-        # get BAO indices
-        Pk = ccl.linear_matter_power(cosmo, np.power(10, lk), 1)
-        BAO = interpolator.get_BAO_idx(Pk)
-        idx = np.r_[0, BAO, self.kpts-1]
+        To overcome memory constraints in the calculation of
+        the metric distance, we take advantage of `a_arr` and `k_arr`
+        being fixed and construct `apts*kpts` independent interpolators.
 
-        # find weights using arc lengths of `dP(k)/dk`
-        dlPk = np.gradient(np.log10(Pk))
-        norm = np.abs((lk[-1]-lk[0])/(dlPk[-1]-dlPk[0]))  # renormalization
-        dlPk *= norm
-        C_tot = wts.C(lk, dlPk)
-        N = [self.kpts*wts.C(lk[i1:i2+1], dlPk[i1:i2+1])/C_tot
-                                 for i1, i2 in zip(idx, idx[1:])]
-        N = np.round(N).astype(int)
-        # fix truncation error --> distribute to the least sampled region
-        if np.sum(N) < self.kpts:
-            N[np.argmin(N)] += self.kpts-np.sum(N)
-
-        idxs = np.split(np.arange(self.kpts), BAO)
-        k = np.hstack([np.logspace(*lk[i.take([0, -1])], num=int(n))
-                                           for i, n in zip(idxs, N)])
-        return k
+        To achieve smoother interpolation over the extent of the
+        power spectrum, we interpolate `log_10(Pk)`.
+        """
+        print("Interpolating...")
+        lPk = np.log10(Pk).reshape(*np.r_[self.weights, self.apts*self.kpts])
+        self.F = [Rbf(*np.c_[self.pos, lPk[..., i].flatten()].T,
+                      function=self.interpf)
+                  for i in range(self.apts*self.kpts)]
+        self.F = np.array(self.F).reshape((self.apts, self.kpts))
 
     def linear_matter_power(self, cosmo, k_arr, a_arr):
         """Interpolated linear matter power spectrum with the same
-        function call as `pyccl.linear_matter_power`.
+        function call as `pyccl.linear_matter_power`
         """
         # check if `cosmo` is compatible with interpolation
-        fixed = list(set(self.cd.keys() - set(self.pars)))
-        for par in fixed:
-            if cosmo[par] != self.cd[par]:
-                raise ValueError(textwrap.fill(textwrap.dedent("""
-        Cosmological parameter %s not compatible with interpolation.
-        """ % par)))
-
+        if self.check_cosmo:
+            fixed = list(set(self.cd.keys() - set(self.pars)))
+            for par in fixed:
+                if cosmo[par] != self.cd[par]:
+                    raise ValueError(textwrap.fill(textwrap.dedent("""
+            Cosmological parameter %s not compatible with interpolation.
+            """ % par)))
+        if not all(np.in1d(a_arr, self.a_arr)):
+            raise ValueError("Value(s) in a_arr not matching interpolation.")
+        if not all(np.in1d(k_arr, self.k_arr)):
+            raise ValueError("Value(s) in k_arr not matching interpolation.")
         a_arr = np.atleast_1d(a_arr).astype(float)
         k_arr = np.atleast_1d(k_arr).astype(float)
+
         pars = [cosmo[par] for par in self.pars]
-        pars.extend([a_arr, np.log10(k_arr)])
-        pnt = np.meshgrid(*pars)
-        pnt = np.vstack(list(map(np.ravel, pnt))).T
-        Pk = self.F(pnt).reshape((len(a_arr), len(k_arr)))
-        return 10**Pk.squeeze()
+
+        ia = np.searchsorted(self.a_arr, a_arr)
+        ik = np.searchsorted(self.k_arr, k_arr)
+
+        lPk = np.array([f(*pars) for f in self.F[ia][:, ik].flatten()])
+        Pk = 10**lPk.reshape((len(a_arr), len(k_arr)))
+        return Pk.squeeze()
