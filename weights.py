@@ -39,16 +39,16 @@ class weights(object):
         Scale factors to sample at.
         If `None`, use arguments `amin`, `amax`, `apts`
         to construct the scale factor array.
-    interp_pts : ``int``
-        Initial number of sampling points along each
-        cosmological dimension.
+    wpts : ``int``
+        Initial number of linearly spaced sampling points
+        along each cosmological dimension.
     prefix : ``str``
         Prefix used to save the output.
     """
 
     def __init__(self, priors, cosmo_default,
                  k_arr=None, a_arr=None, *,
-                 interp_pts=16, prefix=""):
+                 wpts=16, prefix=""):
         self.priors = priors
         self.cd = cosmo_default
         self.pre = prefix
@@ -57,13 +57,13 @@ class weights(object):
         self.k_arr = k_arr
         self.a_arr = a_arr
         self.pars = list(self.priors.keys())
-        self.interp_pts = interp_pts
+        self.wpts = wpts
 
     def sample_pts(self, key):
         """Create an array of sampling points."""
         return np.linspace(self.priors[key][0],
                            self.priors[key][1],
-                           self.interp_pts)
+                           self.wpts)
 
     @classmethod
     def linear_matter_power(weights, cosmo, k_arr, a_arr):
@@ -77,7 +77,7 @@ class weights(object):
 
     def gradient(self, arr, key):
         kw = self.cd.copy()  # clean copy to avoid surprises
-        lPk_full = np.zeros((self.interp_pts, len(self.a_arr), len(self.k_arr)))
+        lPk_full = np.zeros((self.wpts, len(self.a_arr), len(self.k_arr)))
         for i, val in enumerate(tqdm(arr, desc=key)):
             kw[key] = val
             cosmo = ccl.Cosmology(**kw)
