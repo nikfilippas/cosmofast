@@ -1,0 +1,9 @@
+# Directories
+__pycache__/
+res/
+.spyproject/
+
+# Files
+interp_stats.ods
+.~lock*
+rbf_test.py
