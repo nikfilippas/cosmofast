@@ -3,7 +3,6 @@ Create a cosmological linear matter power spectrum interpolator.
 """
 import numpy as np
 import pyccl as ccl
-from scipy.interpolate import RegularGridInterpolator
 from tqdm import tqdm
 import textwrap
 from weights import weights as wts
@@ -38,9 +37,14 @@ class interpolator(object):
     kpts : ``int``
         Number of wavenumber sampling points.
     samples : ``int``
-        Number of interpolation points used by the interpolator.
-        Note that since the weights will be used, this number is
-        approximate, but the final number will be very close.
+        Target number of interpolation nodes.
+        The actual number of samples will vary (always greater,
+        but close to the target number) because the relative
+        sample sizes along each cosmological dimension are weighted.
+    method : ``str``
+        Interpolation method. Supported are {'linear', 'rbf'}.
+        See `scipy.interpolate` for more information.
+        Default is `rbf`.
     interp_pts : ``int``
         Initial number of sampling points along each
         cosmological dimension.
@@ -56,7 +60,8 @@ class interpolator(object):
                  k_arr = None, a_arr=None,
                  amin=0.01, amax=1, apts=2048,
                  lkmin=-4, lkmax=2, kpts=4096,
-                 samples=50, interp_pts=16,
+                 samples=50, method="rbf",
+                 interp_pts=16,
                  prefix="", overwrite=True, save=True):
         self.priors = priors
         if cosmo_default is None:
@@ -66,6 +71,7 @@ class interpolator(object):
         self.k_arr = k_arr
         self.a_arr = a_arr
         self.samples = samples
+        self.method = method
         self.pre = prefix
 
         # build z-space and k-space
@@ -104,6 +110,7 @@ class interpolator(object):
 
         # extract parameter coordinates
         self.pos = np.vstack(list(map(np.ravel, mg))).T
+
         # sample parameter space at weighted axes
         Pk = np.zeros((np.product(self.weights),
                        len(self.a_arr),
@@ -113,13 +120,21 @@ class interpolator(object):
             kw.update(dict(zip(self.pars, p)))
             cosmo = ccl.Cosmology(**kw)
             Pk[i] = wts.linear_matter_power(cosmo, self.k_arr, self.a_arr)
-        Pk = Pk.reshape(*np.append(self.weights,
-                                   [len(self.a_arr),
-                                    len(self.k_arr)]))
+        Pk = Pk.reshape(*np.r_[self.weights, len(self.a_arr), len(self.k_arr)])
 
         # `k_arr` and `P(k)` behave better in logspace
-        points.extend([self.a_arr, np.log10(self.k_arr)])
-        self.F = RegularGridInterpolator(points, np.log10(Pk))
+        if self.method == "linear":
+            from scipy.interpolate import RegularGridInterpolator
+            points.extend([self.a_arr, np.log10(self.k_arr)])
+            self.F = RegularGridInterpolator(points, np.log10(Pk))
+        elif self.method == "rbf":
+            from scipy.interpolate import Rbf
+            mg = np.meshgrid(*points, indexing="ij")
+            pos = np.vstack(list(map(np.ravel, mg))).T
+            xs = np.c_[pos, np.log10(Pk).flatten()]
+            self.F = Rbf(*xs.T)
+        else:
+            raise ValueError("Interpolation method not recognized.")
 
     @classmethod
     def Planck18(interpolator):
@@ -152,12 +167,12 @@ class interpolator(object):
         """
         Construct k-array of varying sampling densities.
 
+        Split P(k) in 3 regions: (start, BAO, end).
         Upsample regions of the power spectrum with many features
-        and downsample uninteresting regions. Split P(k) in 3
-        regions: (start, BAO, end).
+        and downsample uninteresting regions.
 
         Choice of scale factor does not matter because acoustic
-        scales are the same throughout structure growth.
+        scales remain the same throughout structure growth.
 
         #TODO: see how BAO peaks change with given priors
         and sacrifice some samples in those regions as well.
