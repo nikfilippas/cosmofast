@@ -13,19 +13,22 @@ from interpolator import interpolator
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
+# priors = {"h" : [0.55, 0.91],
+#           "sigma8": [0.50, 1.25],
+#           "Omega_b": [0.03, 0.07],
+#           "Omega_c": [0.1, 0.9],
+#           "n_s": [0.87, 1.07]}
 
 priors = {"h" : [0.65, 0.75],
-          "sigma8": [0.77, 0.87],
-          "Omega_b": [0.01, 0.10]}
+          "sigma8": [0.77, 0.87]}
 samples = 7**len(priors.keys())
 k_arr = np.logspace(-4, 2, 512)
 a_arr = np.linspace(0.1, 1, 16)
 
-q = interpolator(priors, samples=250,
+q = interpolator(priors, samples=50,
                  k_arr=k_arr, a_arr=a_arr,
-                 prefix="3-free", overwrite=True,
-                 apts=512, kpts=512,
-                 interp_pts=16)
+                 prefix="rbf-test", overwrite=True,
+                 wpts=16)
 
 node = [np.linspace(*priors[par], num=w) for par, w in zip(priors, q.weights)]
 anti = [n[:-1] + np.diff(n)/2 for n in node]
@@ -45,6 +48,7 @@ points = np.vstack(list(map(np.ravel, mgrid))).T
 # k_arr = np.sort(np.append(q.k_arr, k_mid))
 
 kw = interpolator.Planck18()
+d = []
 errs = []
 for pnt in points:
     # initiate new cosmology
@@ -56,10 +60,12 @@ for pnt in points:
 
     err = np.fabs(100*(1-approx/CAMB)).max()
     errs.append(err)
+    d.append(1-approx/CAMB)
     print(err)
 errs = np.array(errs)
+d = np.array(d)
 
-d = 100*(1-approx/CAMB)
+d = np.mean(d, axis=0)
 
 
 norm = mpl.colors.SymLogNorm(1e-2, base=10)
