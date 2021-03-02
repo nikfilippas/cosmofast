@@ -1,5 +1,8 @@
 """
 Create a cosmological linear matter power spectrum interpolator.
+
+#TODO: sklearn optimal epsilon
+#TODO: run profiler
 """
 import textwrap
 import warnings
@@ -19,12 +22,12 @@ class interpolator(object):
     to the parameters that change more and/or have more feautures.
     This is calculated by `weights.weights` in the following way:
         - Compute the partial derivative of `P(k,a)` with respect
-        to each cosmological parameter, at every `(k,a)`.
+          to each cosmological parameter, at every `(k,a)`.
         - Define the 'effective' derivative as the maximum of that.
         - Calculate the normalized arc length to upsample hilly
-        hypersurfaces.
+          hypersurfaces.
         - Define this as the weight. Normalize for the target
-        number of samples.
+          number of samples.
 
     The power spectrum is computed at the nodes and interpolated
     using radial basis functions (RBFs). These are functions whose
@@ -58,19 +61,19 @@ class interpolator(object):
         If `None`, defaults to Planck 2018.
     k_arr : ``numpy.array``
         Wavenumbers to sample at.
-        If `None`, use arguments `lkmin`, `lkmax`, `kpts`
-        to construct the wavenumber array.
     a_arr : ``numpy.array``
         Scale factors to sample at.
-        If `None`, use arguments `amin`, `amax`, `apts`
-        to construct the scale factor array.
     samples : ``int``
         Target number of interpolation nodes.
         The actual number of samples will vary (always greater,
         but close to the target number) if the cosmological
         dimensions are weihted, or if the `n-th` root of `samples`,
-        where `n` is the number of cosmological parameters
+        where `n` is the number of cosmological parameters,
         is not an integer.
+    int_samples_func : ``str`` {'round', 'ceil', 'floor'}
+        Method to approximate integer samples along each axis.
+        'round' will make the effective number of samples nearest
+        to the target `samples`. Defaults to `ceil`.
     check_cosmo : ``bool``
         Check that every ``pyccl.Cosmology`` object passed in the
         interpolator is compatible with the interpolation.
@@ -119,8 +122,8 @@ class interpolator(object):
     """
 
     def __init__(self, priors, cosmo_default=None,
-                 k_arr=None, a_arr=None,
-                 samples=50, check_cosmo=True,
+                 k_arr=None, a_arr=None, samples=50, *,
+                 int_samples_func="ceil", check_cosmo=True,
                  interpf="gaussian", epsilon=None,
                  weigh_dims=True, wpts=None,
                  prefix="", overwrite=True, save=True):
@@ -138,6 +141,7 @@ class interpolator(object):
         self.apts = len(self.a_arr)
         # interp
         self.samples = samples
+        self.int_samples_func = int_samples_func
         self.check_cosmo = check_cosmo
         self.interpf = interpf
         self.epsilon = epsilon
@@ -227,6 +231,41 @@ class interpolator(object):
                   for i in tqdm(range(self.apts*self.kpts), desc="Interpolating")]
         self.F = np.array(self.F).reshape((self.apts, self.kpts))
 
+    def callF(self, *pars):
+        """
+        Call the interpolators on a list of parameters.
+
+        Arguments
+        ---------
+        *pars : ``list``
+            List of query parameters.
+            The final 2 rows should be `a_arr`, `k_arr` in that ordering.
+            Caution: a, k order is swapped relative to `pyccl.linear_matter_power`!
+
+        Return
+        -------
+        Pk : ``numpy.array``
+            Cosmological linear power spectrum evaluated at `*pars`.
+            Extra dimensions are squeezed out.
+        """
+        pars, (a_arr, k_arr) = pars[:-2], pars[-2:]
+        if not all(np.in1d(a_arr, self.a_arr)):
+            raise ValueError("Value(s) in a_arr not matching interpolation.")
+        if not all(np.in1d(k_arr, self.k_arr)):
+            raise ValueError("Value(s) in k_arr not matching interpolation.")
+        # k, a
+        a_arr = np.atleast_1d(a_arr).astype(float)
+        k_arr = np.atleast_1d(k_arr).astype(float)
+        ia = np.searchsorted(self.a_arr, a_arr)
+        ik = np.searchsorted(self.k_arr, k_arr)
+        # cosmo
+        mg = np.meshgrid(*pars, indexing="ij")
+        pos = np.vstack(list(map(np.ravel, mg)))
+
+        lPk = np.array([f(*pos) for f in self.F[ia][:, ik].flatten()])
+        Pk = 10**lPk.reshape((len(a_arr), len(k_arr), pos.shape[1]))
+        return Pk.squeeze()
+
     def linear_matter_power(self, cosmo, k_arr, a_arr):
         """Interpolated linear matter power spectrum with the same
         function call as `pyccl.linear_matter_power`
@@ -243,14 +282,6 @@ class interpolator(object):
             raise ValueError("Value(s) in a_arr not matching interpolation.")
         if not all(np.in1d(k_arr, self.k_arr)):
             raise ValueError("Value(s) in k_arr not matching interpolation.")
-        a_arr = np.atleast_1d(a_arr).astype(float)
-        k_arr = np.atleast_1d(k_arr).astype(float)
 
         pars = [cosmo[par] for par in self.pars]
-
-        ia = np.searchsorted(self.a_arr, a_arr)
-        ik = np.searchsorted(self.k_arr, k_arr)
-
-        lPk = np.array([f(*pars) for f in self.F[ia][:, ik].flatten()])
-        Pk = 10**lPk.reshape((len(a_arr), len(k_arr)))
-        return Pk.squeeze()
+        return self.callF(*pars, a_arr, k_arr)
