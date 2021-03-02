@@ -119,8 +119,12 @@ class weights(object):
                            + np.gradient(y, axis=-1)**2)
         return np.sum(segments, axis=-1).squeeze()
 
-    def get_weights(self, ref=100, save=True, output=True, overwrite=False):
+    def get_weights(self, ref=100,
+                    int_samples_func="ceil",
+                    save=True, output=True,
+                    overwrite=False):
         """Calculate re-distribution weights of the sample points."""
+        ifunc = getattr(np, int_samples_func)
         f_weights = "_".join(filter(None, ["res/weights", self.pre])) + ".npz"
         gradients = self.get_gradients(save=save,
                                         output=output,
@@ -130,7 +134,7 @@ class weights(object):
             weights[par] = self.C(*grad.T)
         norm = (ref/np.product(list(weights.values())))**(1/len(self.pars))
         for par, w in weights.items():
-            weights[par] = np.ceil(norm*w).astype(int)
+            weights[par] = ifunc(norm*w).astype(int)
 
         if save:
             os.makedirs("res", exist_ok=True)
