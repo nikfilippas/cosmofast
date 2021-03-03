@@ -191,6 +191,12 @@ class interpolator(object):
             but only %.1f GB are available. Reduce total blocksize
             at least %d times.
             """ % (mn, ma, int(mn/ma)))))
+        elif mn/ma < 0.85:
+            print(textwrap.fill(textwrap.dedent("""
+            PSA: With current memory usage, total blocksize can be
+            increased %.1f times. This will result to %.1f faster evaluation
+            time when calling the interpolator at a single scale factor.
+            """ % (ma/mn, np.sqrt(ma/mn)))))
 
         # calculate parameter weights
         self.get_weights()
@@ -262,8 +268,8 @@ class interpolator(object):
         points = [pnts.tolist() for pnts in self.points]
 
         # determine a, k number of blocks in each dimension
-        Na = int(self.apts/self.a_blocksize)
-        Nk = int(self.kpts/self.k_blocksize)
+        Na = self.apts//self.a_blocksize
+        Nk = self.kpts//self.k_blocksize
 
         lPk = np.log10(Pk).reshape(*np.r_[self.weights,      # cosmo dims
                                           self.a_blocksize,  # interp axis
@@ -330,15 +336,15 @@ class interpolator(object):
             Extra dimensions are squeezed out.
         """
         pars, (a_arr, k_arr) = pars[:-2], pars[-2:]
-        if not all(np.in1d(a_arr, self.a_arr)):
-            raise ValueError("Value(s) in a_arr not matching interpolation.")
-        if not all(np.in1d(k_arr, self.k_arr)):
-            raise ValueError("Value(s) in k_arr not matching interpolation.")
+        if self.a_blocksize == 1 and not all(np.in1d(a_arr, self.a_arr)):
+            raise ValueError("Values between nodes in a_arr not interpolated.")
+        if self.k_blocksize == 1 and not all(np.in1d(k_arr, self.k_arr)):
+            raise ValueError("Values between nodes in k_arr not interpolated.")
         # k, a
         a_arr = np.atleast_1d(a_arr).astype(float)
         k_arr = np.atleast_1d(k_arr).astype(float)
-        ia = np.searchsorted(self.a_arr, a_arr)
-        ik = np.searchsorted(self.k_arr, k_arr)
+        ia = np.searchsorted(self.a_arr, a_arr) // self.a_blocksize
+        ik = np.searchsorted(self.k_arr, k_arr) // self.k_blocksize
         # cosmo
         mg = np.meshgrid(*pars, indexing="ij")
         pos = np.vstack(list(map(np.ravel, mg)))
