@@ -1,15 +1,22 @@
 """
 Create a cosmological linear matter power spectrum interpolator.
 
-#TODO: sklearn optimal epsilon
+#TODO: blocks of interpolators on a, k - constructing & calling
+#TODO: possibility to interpolate a, k within blocks
+#TODO: option to quadruple number of interpolators to interpolate all a, k
+#TODO: rescale cosmo parameters to mean nodal separation
+#TODO: sklearn optimal epsilon for all scales
 #TODO: run profiler
 """
-import textwrap
 import warnings
+import textwrap
+import psutil
+from itertools import product
 from tqdm import tqdm
 import numpy as np
 import pyccl as ccl
 from scipy.interpolate import Rbf
+from scipy.linalg.misc import LinAlgWarning
 from weights import weights as wts
 
 
@@ -83,8 +90,12 @@ class interpolator(object):
     epsilon : ``float``
         Adjustment knob for gaussian and multiquadric functions.
         A good start for cosmological interpolation is 50x the
-        average distance between the nodes.
+        average distance between the nodes.  #FIXME: new optimal epsilon
         See `scipy.interpolate.Rbf`.
+    a_blocksize, k_blocksize : ``float``
+        Bin `a_arr` and `k_arr` in blocks of that size.
+        Increases P(k,a) evaluation speed in expense of
+        interpolator construction time. Defaults to no binning.
     weigh_dims : ``bool``
         Distribute available samples along the cosmological
         dimensions using weights, according to how much `P(k,a)`
@@ -119,12 +130,17 @@ class interpolator(object):
         Coordinates of the nodal points.
     F : ``numpy.array`` of ``scipy.interpolate.rbf.Rbf`` (apts, kpts)
         Array containing the interpolators for each (k, a) combination.
+    _logger : ``numpy.array``
+        Array of same shape as `F`, where `scipy.linalg` warnings are logged.
+        These warnings are raised during (pseudo-) inversion of matrices
+        in the RBF calculation, when the reciprocal condition number is `<<1`.
     """
 
     def __init__(self, priors, cosmo_default=None,
                  k_arr=None, a_arr=None, samples=50, *,
                  int_samples_func="ceil", check_cosmo=True,
                  interpf="gaussian", epsilon=None,
+                 a_blocksize=None, k_blocksize=None,
                  weigh_dims=True, wpts=None,
                  prefix="", overwrite=True, save=True):
         # cosmo params
@@ -148,8 +164,14 @@ class interpolator(object):
         if self.interpf not in ["multiquadric", "inverse", "gaussian"]:
             warnings.warn("epsilon not defined for function %s" % self.interpf)
             self.epsilon = None
-        self.weigh_dims = weigh_dims
+        self.a_blocksize = 1 if a_blocksize is None else a_blocksize
+        if self.apts % self.a_blocksize != 0:
+            raise ValueError("blocksize should divide a_arr exactly")
+        self.k_blocksize = 1 if k_blocksize is None else k_blocksize
+        if self.kpts % self.k_blocksize != 0:
+            raise ValueError("blocksize should divide k_arr exactly")
         # weights
+        self.weigh_dims = weigh_dims
         self.wpts = wpts
         if self.weigh_dims and (self.wpts is None):
             warnings.warn("wpts not set; defaulting to 16 per dimension")
@@ -158,6 +180,17 @@ class interpolator(object):
         self.pre = prefix
         self.overwrite = overwrite
         self.save = save
+
+        # confirm enough available memory
+        mn = 4*(self.samples*self.a_blocksize*self.k_blocksize)**2 / 1024**3
+        ma = psutil.virtual_memory()[1] / 1024**3
+
+        if mn > ma:
+            warnings.warn(textwrap.fill(textwrap.dedent("""
+            Need ~%.1f GB of memory for RBF distance calculation
+            but only %.1f GB are available. Reduce total blocksize
+            at least %d times.
+            """ % (mn, ma, int(mn/ma)))))
 
         # calculate parameter weights
         self.get_weights()
@@ -217,19 +250,67 @@ class interpolator(object):
         """
         Interpolate `P(k,a)`.
 
-        To overcome memory constraints in the calculation of
-        the metric distance, we take advantage of `a_arr` and `k_arr`
+        Overcome memory constraints in the calculation of
+        the metric distance, by taking advantage of `a_arr` and `k_arr`
         being fixed and construct `apts*kpts` independent interpolators.
 
-        To achieve smoother interpolation over the extent of the
-        power spectrum, we interpolate `log_10(Pk)`.
+        Increase evaluation speed of P(k,a) interpolators by block binning.
+
+        Achieve smoother interpolation over the extent of the
+        power spectrum, by interpolating `log_10(Pk)`.
         """
-        lPk = np.log10(Pk).reshape(*np.r_[self.weights, self.apts*self.kpts])
-        self.F = [Rbf(*np.c_[self.pos, lPk[..., i].flatten()].T,
-                      function=self.interpf,
-                      epsilon=self.epsilon)
-                  for i in tqdm(range(self.apts*self.kpts), desc="Interpolating")]
-        self.F = np.array(self.F).reshape((self.apts, self.kpts))
+        points = [pnts.tolist() for pnts in self.points]
+
+        # determine a, k number of blocks in each dimension
+        Na = int(self.apts/self.a_blocksize)
+        Nk = int(self.kpts/self.k_blocksize)
+
+        lPk = np.log10(Pk).reshape(*np.r_[self.weights,      # cosmo dims
+                                          self.a_blocksize,  # interp axis
+                                          self.k_blocksize,  # interp axis
+                                          Na, Nk])           # iter axes
+        lPk = lPk.squeeze()  # can't interpolate dims of size 1
+
+        # find block boundaries
+        ablocks = np.asarray(np.split(self.a_arr, Na))
+        kblocks = np.asarray(np.split(np.log10(self.k_arr), Nk))
+
+        # convenience functions
+        rbf = lambda x: Rbf(*x.T, function=self.interpf, epsilon=self.epsilon)
+        reset_logger = lambda: np.zeros((Na, Nk), dtype=int)
+        def interp(points, lPka):
+            """Interpolate and log warnings."""
+            pos = list(product(*points))  # build grid
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                interp = rbf(np.c_[pos, lPka.flatten()])
+                assert len(w) == 1
+                assert issubclass(LinAlgWarning, w[0].category)
+                self._logger[ia, ik] = 1
+            self.F.append(interp)
+            pbar.update(1)
+
+        # interpolation on block grid
+        self._logger = reset_logger()
+        self.F = []
+        with tqdm(total=Na*Nk, desc="Interpolating") as pbar:
+            for ia, ab in enumerate(ablocks):
+                if self.a_blocksize > 1:
+                    points.extend([ab.tolist()])
+
+                for ik, kb in enumerate(kblocks):
+                    if self.k_blocksize > 1:
+                        points.extend([kb.tolist()])
+
+                    lPka = lPk if Na == Nk == 1 else lPk[..., ia, ik]  # 1 block
+                    interp(points, lPka)
+
+                    if self.k_blocksize > 1:
+                        points.pop()
+                if self.a_blocksize > 1:
+                    points.pop()
+
+        self.F = np.array(self.F).reshape((Na, Nk))
 
     def callF(self, *pars):
         """
@@ -242,7 +323,7 @@ class interpolator(object):
             The final 2 rows should be `a_arr`, `k_arr` in that ordering.
             Caution: a, k order is swapped relative to `pyccl.linear_matter_power`!
 
-        Return
+        Returns
         -------
         Pk : ``numpy.array``
             Cosmological linear power spectrum evaluated at `*pars`.
