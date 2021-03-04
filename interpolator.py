@@ -1,12 +1,5 @@
 """
 Create a cosmological linear matter power spectrum interpolator.
-
-#TODO: blocks of interpolators on a, k - constructing & calling
-#TODO: possibility to interpolate a, k within blocks
-#TODO: option to quadruple number of interpolators to interpolate all a, k
-#TODO: rescale cosmo parameters to mean nodal separation
-#TODO: sklearn optimal epsilon for all scales
-#TODO: run profiler
 """
 import warnings
 import textwrap
@@ -81,10 +74,6 @@ class interpolator(object):
         Method to approximate integer samples along each axis.
         'round' will make the effective number of samples nearest
         to the target `samples`. Defaults to `ceil`.
-    check_cosmo : ``bool``
-        Check that every ``pyccl.Cosmology`` object passed in the
-        interpolator is compatible with the interpolation.
-        Save time by setting it to `False`, but do so at your own risk!
     interpf : ``str``
         The radial basis function. See `scipy.interpolate.Rbf`.
     epsilon : ``float``
@@ -92,10 +81,14 @@ class interpolator(object):
         A good start for cosmological interpolation is 50x the
         average distance between the nodes.  #FIXME: new optimal epsilon
         See `scipy.interpolate.Rbf`.
-    a_blocksize, k_blocksize : ``float``
-        Bin `a_arr` and `k_arr` in blocks of that size.
-        Increases P(k,a) evaluation speed in expense of
+    a_blocksize : ``float``
+        Bin `a_arr` in blocks of that size.
+        Increases P(k,a) evaluation speed in expense of memory and
         interpolator construction time. Defaults to no binning.
+        If memory is an issue, prefer to bin in k-blocks (use `k_blocksize`)
+        instead, as function calls are usually made at a single value of a.
+    k_blocksize : ``float``
+        Bin `k_arr` in blocks of that size, as in `a_blocksize`.
     weigh_dims : ``bool``
         Distribute available samples along the cosmological
         dimensions using weights, according to how much `P(k,a)`
@@ -116,6 +109,7 @@ class interpolator(object):
     ----------
     All arguments become class attributes.
     Additional attributes are listed below.
+
     pars : ``list`` of ``str``
         Names of the free cosmological parameters.
     kpts : ``float``
@@ -134,18 +128,19 @@ class interpolator(object):
         Array of same shape as `F`, where `scipy.linalg` warnings are logged.
         These warnings are raised during (pseudo-) inversion of matrices
         in the RBF calculation, when the reciprocal condition number is `<<1`.
+        0 if no warning has been raised, 1 otherwise.
     """
 
     def __init__(self, priors, cosmo_default=None,
                  k_arr=None, a_arr=None, samples=50, *,
-                 int_samples_func="ceil", check_cosmo=True,
+                 int_samples_func="ceil",
                  interpf="gaussian", epsilon=None,
                  a_blocksize=None, k_blocksize=None,
                  weigh_dims=True, wpts=None,
                  prefix="", overwrite=True, save=True):
         # cosmo params
         self.priors = priors
-        self.pars = self.priors.keys()
+        self.pars = list(self.priors.keys())
         self.cosmo_default = cosmo_default
         if self.cosmo_default is None:
             print("Fixed cosmological parameters from Planck 2018.")
@@ -158,10 +153,10 @@ class interpolator(object):
         # interp
         self.samples = samples
         self.int_samples_func = int_samples_func
-        self.check_cosmo = check_cosmo
         self.interpf = interpf
         self.epsilon = epsilon
-        if self.interpf not in ["multiquadric", "inverse", "gaussian"]:
+        if self.interpf not in ["multiquadric", "inverse", "gaussian"] \
+           and self.epsilon is not None:
             warnings.warn("epsilon not defined for function %s" % self.interpf)
             self.epsilon = None
         self.a_blocksize = 1 if a_blocksize is None else a_blocksize
@@ -196,7 +191,9 @@ class interpolator(object):
             PSA: With current memory usage, total blocksize can be
             increased %.1f times. This will result to %.1f faster evaluation
             time when calling the interpolator at a single scale factor.
-            """ % (ma/mn, np.sqrt(ma/mn)))))
+            The `cosmo.Cosmology` object could be instantiated ~%d times
+            faster than the time it takes CCL to computes distances.
+            """ % (ma/mn, np.sqrt(ma/mn), 3*ma/mn))))
 
         # calculate parameter weights
         self.get_weights()
@@ -226,6 +223,7 @@ class interpolator(object):
                     k_arr=self.k_arr, a_arr=self.a_arr,
                     wpts=self.wpts, prefix=self.pre)
             weights_dict = W.get_weights(ref=self.samples,
+                                         int_samples_func=self.int_samples_func,
                                          output=True,
                                          save=self.save,
                                          overwrite=self.overwrite)
@@ -262,20 +260,15 @@ class interpolator(object):
 
         Increase evaluation speed of P(k,a) interpolators by block binning.
 
-        Achieve smoother interpolation over the extent of the
-        power spectrum, by interpolating `log_10(Pk)`.
+        Achieve smoother interpolation over the extent of the power spectrum
+        by interpolating :math:`log_{10}(Pk)` and :math:`log_{10}(k)`.
         """
+        lPk = np.log10(Pk)
         points = [pnts.tolist() for pnts in self.points]
 
         # determine a, k number of blocks in each dimension
         Na = self.apts//self.a_blocksize
         Nk = self.kpts//self.k_blocksize
-
-        lPk = np.log10(Pk).reshape(*np.r_[self.weights,      # cosmo dims
-                                          self.a_blocksize,  # interp axis
-                                          self.k_blocksize,  # interp axis
-                                          Na, Nk])           # iter axes
-        lPk = lPk.squeeze()  # can't interpolate dims of size 1
 
         # find block boundaries
         ablocks = np.asarray(np.split(self.a_arr, Na))
@@ -284,91 +277,38 @@ class interpolator(object):
         # convenience functions
         rbf = lambda x: Rbf(*x.T, function=self.interpf, epsilon=self.epsilon)
         reset_logger = lambda: np.zeros((Na, Nk), dtype=int)
-        def interp(points, lPka):
+        def func(points, lPka):
             """Interpolate and log warnings."""
             pos = list(product(*points))  # build grid
             with warnings.catch_warnings(record=True) as w:
                 warnings.simplefilter("always")
                 interp = rbf(np.c_[pos, lPka.flatten()])
-                assert len(w) == 1
-                assert issubclass(LinAlgWarning, w[0].category)
-                self._logger[ia, ik] = 1
-            self.F.append(interp)
+                assert len(w) in [0, 1]
+                if len(w) > 0:
+                    assert issubclass(LinAlgWarning, w[0].category)
+                    self._logger[ia, ik] = 1
+            self.F[ia, ik] = interp
             pbar.update(1)
 
         # interpolation on block grid
         self._logger = reset_logger()
-        self.F = []
+        self.F = np.empty((Na, Nk), dtype="object")
         with tqdm(total=Na*Nk, desc="Interpolating") as pbar:
             for ia, ab in enumerate(ablocks):
+                idx1a, idx2a = self.a_blocksize*np.array([ia, ia+1])
                 if self.a_blocksize > 1:
                     points.extend([ab.tolist()])
 
                 for ik, kb in enumerate(kblocks):
+                    idx1k, idx2k = self.k_blocksize*np.array([ik, ik+1])
                     if self.k_blocksize > 1:
                         points.extend([kb.tolist()])
 
-                    lPka = lPk if Na == Nk == 1 else lPk[..., ia, ik]  # 1 block
-                    interp(points, lPka)
+                    # can't interpolate dims of size 1 - squeeze them out
+                    lPka = lPk[..., idx1a:idx2a, idx1k:idx2k].squeeze()
+                    func(points, lPka)
 
                     if self.k_blocksize > 1:
                         points.pop()
                 if self.a_blocksize > 1:
                     points.pop()
-
-        self.F = np.array(self.F).reshape((Na, Nk))
-
-    def callF(self, *pars):
-        """
-        Call the interpolators on a list of parameters.
-
-        Arguments
-        ---------
-        *pars : ``list``
-            List of query parameters.
-            The final 2 rows should be `a_arr`, `k_arr` in that ordering.
-            Caution: a, k order is swapped relative to `pyccl.linear_matter_power`!
-
-        Returns
-        -------
-        Pk : ``numpy.array``
-            Cosmological linear power spectrum evaluated at `*pars`.
-            Extra dimensions are squeezed out.
-        """
-        pars, (a_arr, k_arr) = pars[:-2], pars[-2:]
-        if self.a_blocksize == 1 and not all(np.in1d(a_arr, self.a_arr)):
-            raise ValueError("Values between nodes in a_arr not interpolated.")
-        if self.k_blocksize == 1 and not all(np.in1d(k_arr, self.k_arr)):
-            raise ValueError("Values between nodes in k_arr not interpolated.")
-        # k, a
-        a_arr = np.atleast_1d(a_arr).astype(float)
-        k_arr = np.atleast_1d(k_arr).astype(float)
-        ia = np.searchsorted(self.a_arr, a_arr) // self.a_blocksize
-        ik = np.searchsorted(self.k_arr, k_arr) // self.k_blocksize
-        # cosmo
-        mg = np.meshgrid(*pars, indexing="ij")
-        pos = np.vstack(list(map(np.ravel, mg)))
-
-        lPk = np.array([f(*pos) for f in self.F[ia][:, ik].flatten()])
-        Pk = 10**lPk.reshape((len(a_arr), len(k_arr), pos.shape[1]))
-        return Pk.squeeze()
-
-    def linear_matter_power(self, cosmo, k_arr, a_arr):
-        """Interpolated linear matter power spectrum with the same
-        function call as `pyccl.linear_matter_power`
-        """
-        # check if `cosmo` is compatible with interpolation
-        if self.check_cosmo:
-            fixed = list(set(self.cosmo_default.keys() - set(self.pars)))
-            for par in fixed:
-                if cosmo[par] != self.cosmo_default[par]:
-                    raise ValueError(textwrap.fill(textwrap.dedent("""
-            Cosmological parameter %s not compatible with interpolation.
-            """ % par)))
-        if not all(np.in1d(a_arr, self.a_arr)):
-            raise ValueError("Value(s) in a_arr not matching interpolation.")
-        if not all(np.in1d(k_arr, self.k_arr)):
-            raise ValueError("Value(s) in k_arr not matching interpolation.")
-
-        pars = [cosmo[par] for par in self.pars]
-        return self.callF(*pars, a_arr, k_arr)
