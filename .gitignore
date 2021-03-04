@@ -1,10 +1,11 @@
 # Directories
 __pycache__/
 res/
+img/
+legacy/
 .spyproject/
 
 # Files
 interp_stats.ods
 .~lock*
-rbf_test.py
 testfile.npz
