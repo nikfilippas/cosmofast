@@ -85,8 +85,8 @@ interp = interpolator(priors,
                       cosmo_default=None,
                       k_arr=k_arr,
                       a_arr=a_arr,
-                      samples=100,
-                      a_blocksize=4,
+                      samples=50,
+                      a_blocksize=1,
                       k_blocksize=8,
                       interpf="gaussian",
                       epsilon=0.1,
@@ -108,16 +108,14 @@ elif test_cosmo == "random":
     mgrid = np.meshgrid(*vals)
     points = np.vstack(list(map(np.ravel, mgrid))).T
 
-if not test_ak:
+if test_ak == "nodes":
     a_arr = interp.a_arr
     k_arr = interp.k_arr
-else:
+elif test_ak == "antinodes":
     # linear mean
-    a_mid = 0.5*(interp.a_arr[1:] + interp.a_arr[:-1])
-    a_arr = np.sort(np.append(interp.a_arr, a_mid))
+    a_arr = 0.5*(interp.a_arr[1:] + interp.a_arr[:-1])
     # geometric mean (because we interpolated lk_arr)
-    k_mid = (interp.k_arr[1:] * interp.k_arr[:-1])**(0.5)
-    k_arr = np.sort(np.append(interp.k_arr, k_mid))
+    k_arr = (interp.k_arr[1:] * interp.k_arr[:-1])**(0.5)
 
 
 ## TESTING ##
@@ -141,7 +139,7 @@ errs = np.array(np.max(np.fabs(res), axis=(1,2)))
 
 # stats
 e1, e2, e3 = errs.min(), errs.mean(), errs.max()
-print("errors: (min,avg,max)=(%.2e,%.2e,%.2e)" % e1, e2, e3)
+print("errors: (min,avg,max)=(%.2e,%.2e,%.2e)" % (e1, e2, e3))
 
 # Plot X.1
 norm = mpl.colors.SymLogNorm(1e-2, base=10)
