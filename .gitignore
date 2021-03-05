@@ -6,6 +6,4 @@ legacy/
 .spyproject/
 
 # Files
-interp_stats.ods
-.~lock*
 testfile.npz
