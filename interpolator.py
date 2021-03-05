@@ -70,17 +70,6 @@ class interpolator(object):
         dimensions are weihted, or if the `n-th` root of `samples`,
         where `n` is the number of cosmological parameters,
         is not an integer.
-    int_samples_func : ``str`` {'round', 'ceil', 'floor'}
-        Method to approximate integer samples along each axis.
-        'round' will make the effective number of samples nearest
-        to the target `samples`. Defaults to `ceil`.
-    interpf : ``str``
-        The radial basis function. See `scipy.interpolate.Rbf`.
-    epsilon : ``float``
-        Adjustment knob for gaussian and multiquadric functions.
-        A good start for cosmological interpolation is 50x the
-        average distance between the nodes.  #FIXME: new optimal epsilon
-        See `scipy.interpolate.Rbf`.
     a_blocksize : ``float``
         Bin `a_arr` in blocks of that size.
         Increases P(k,a) evaluation speed in expense of memory and
@@ -89,6 +78,17 @@ class interpolator(object):
         instead, as function calls are usually made at a single value of a.
     k_blocksize : ``float``
         Bin `k_arr` in blocks of that size, as in `a_blocksize`.
+    interpf : ``str``
+        The radial basis function. See `scipy.interpolate.Rbf`.
+    epsilon : ``float``
+        Adjustment knob for gaussian and multiquadric functions.
+        A good start for cosmological interpolation is 50x the
+        average distance between the nodes.  #FIXME: new optimal epsilon
+        See `scipy.interpolate.Rbf`.
+    int_samples_func : ``str`` {'round', 'ceil', 'floor'}
+        Method to approximate integer samples along each axis.
+        'round' will make the effective number of samples nearest
+        to the target `samples`. Defaults to `ceil`.
     weigh_dims : ``bool``
         Distribute available samples along the cosmological
         dimensions using weights, according to how much `P(k,a)`
@@ -98,12 +98,11 @@ class interpolator(object):
     wpts : ``int``
         Initial number of sampling points along each
         cosmological dimension.
-    prefix : ``str``
-        Prefix used to save the output.
     overwrite : ``bool``
-        Overwrite any saved output. Defaults to `True`.
-    save: ``bool``
-        Save the weights in compressed `.npz` format.
+        Overwrite any saved output. Every choice of fixed cosmological
+        parameters (`cosmo_default`) and sampled cosmological parameters
+        with linear spacing (`wpts`) gets its own unique code, so it can be
+        reused. Defaults to `False`.
 
     Attributes
     ----------
@@ -125,19 +124,19 @@ class interpolator(object):
     F : ``numpy.array`` of ``scipy.interpolate.rbf.Rbf`` (apts, kpts)
         Array containing the interpolators for each (k, a) combination.
     _logger : ``numpy.array``
-        Array of same shape as `F`, where `scipy.linalg` warnings are logged.
-        These warnings are raised during (pseudo-) inversion of matrices
-        in the RBF calculation, when the reciprocal condition number is `<<1`.
-        0 if no warning has been raised, 1 otherwise.
+        Flag singular RBF interpolation matrices.
+        Very large condition numbers effectively means that matrices
+        are singular as far as default floating point format is concerned
+        (float64 - equivalent to C double). In that case LU decomposition
+        fails and the pseudoinverse is computed instead.
     """
 
     def __init__(self, priors, cosmo_default=None,
                  k_arr=None, a_arr=None, samples=50, *,
-                 int_samples_func="ceil",
-                 interpf="gaussian", epsilon=None,
                  a_blocksize=None, k_blocksize=None,
-                 weigh_dims=True, wpts=None,
-                 prefix="", overwrite=True, save=True):
+                 interpf="gaussian", epsilon=None,
+                 int_samples_func="ceil", weigh_dims=True,
+                 wpts=None, overwrite=False):
         # cosmo params
         self.priors = priors
         self.pars = list(self.priors.keys())
@@ -152,19 +151,19 @@ class interpolator(object):
         self.apts = len(self.a_arr)
         # interp
         self.samples = samples
-        self.int_samples_func = int_samples_func
         self.interpf = interpf
         self.epsilon = epsilon
-        if self.interpf not in ["multiquadric", "inverse", "gaussian"] \
-           and self.epsilon is not None:
-            warnings.warn("epsilon not defined for function %s" % self.interpf)
-            self.epsilon = None
         self.a_blocksize = 1 if a_blocksize is None else a_blocksize
         if self.apts % self.a_blocksize != 0:
             raise ValueError("blocksize should divide a_arr exactly")
         self.k_blocksize = 1 if k_blocksize is None else k_blocksize
         if self.kpts % self.k_blocksize != 0:
             raise ValueError("blocksize should divide k_arr exactly")
+        if self.interpf not in ["multiquadric", "inverse", "gaussian"] \
+           and self.epsilon is not None:
+            warnings.warn("epsilon not defined for function %s" % self.interpf)
+            self.epsilon = None
+        self.int_samples_func = int_samples_func
         # weights
         self.weigh_dims = weigh_dims
         self.wpts = wpts
@@ -172,9 +171,7 @@ class interpolator(object):
             warnings.warn("wpts not set; defaulting to 16 per dimension")
             self.wpts = 16
         # I/O
-        self.pre = prefix
         self.overwrite = overwrite
-        self.save = save
 
         # confirm enough available memory
         mn = 4*(self.samples*self.a_blocksize*self.k_blocksize)**2 / 1024**3
@@ -221,15 +218,15 @@ class interpolator(object):
         if self.weigh_dims:
             W = wts(self.priors, self.cosmo_default,
                     k_arr=self.k_arr, a_arr=self.a_arr,
-                    wpts=self.wpts, prefix=self.pre)
+                    wpts=self.wpts)
             weights_dict = W.get_weights(ref=self.samples,
                                          int_samples_func=self.int_samples_func,
                                          output=True,
-                                         save=self.save,
                                          overwrite=self.overwrite)
             self.weights = np.array([weights_dict[par] for par in self.pars])
         else:
-            w = np.ceil(self.samples**(1/len(self.pars)))
+            ifunc = getattr(np, self.int_samples_func)
+            w = ifunc(self.samples**(1/len(self.pars)))
             self.weights = np.repeat(w, len(self.pars))
 
     def get_nodes(self):

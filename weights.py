@@ -42,16 +42,13 @@ class weights(object):
     wpts : ``int``
         Initial number of linearly spaced sampling points
         along each cosmological dimension.
-    prefix : ``str``
-        Prefix used to save the output.
     """
 
     def __init__(self, priors, cosmo_default,
                  k_arr=None, a_arr=None, *,
-                 wpts=16, prefix=""):
+                 wpts=16):
         self.priors = priors
         self.cosmo_default = cosmo_default
-        self.pre = prefix
         if (k_arr is None) or (a_arr is None):
             raise ValueError("`k_arr` and `a_arr` should be array-like")
         self.k_arr = k_arr
@@ -75,6 +72,24 @@ class weights(object):
         Pk = np.array([ccl.linear_matter_power(cosmo, k_arr, a) for a in a_arr])
         return Pk.squeeze()
 
+    def get_fname(self, which, /, dic="res"):
+        """Produce saving code string."""
+        fixed = list(set(self.cosmo_default.keys() - set(self.pars)))
+        code = "/".join([dic, which]) + "_"
+
+        for par in self.pars:
+            code += "_".join([par,
+                              str(self.priors[par][0]),
+                              str(self.priors[par][1])])
+            code += "_"
+
+        if len(fixed) > 0:
+            for par in fixed:
+                code += "".join([par, str(self.cosmo_default[par])])
+                code += "_"
+            code += "wpts%s.npz" % self.wpts
+        return code
+
     def gradient(self, arr, key):
         kw = self.cosmo_default.copy()  # clean copy to avoid surprises
         lPk_full = np.zeros((self.wpts, len(self.a_arr), len(self.k_arr)))
@@ -89,12 +104,12 @@ class weights(object):
         grads /= dx
         return grads
 
-    def get_gradients(self, save=True, output=True, overwrite=False):
-        f_grads = "_".join(filter(None, ["res/gradients", self.pre])) + ".npz"
+    def get_gradients(self, output=True, overwrite=False):
+        f_grads = self.get_fname("gradients")
         gradients = dict.fromkeys(self.pars)
         # load from memory if possible
         if not overwrite and os.path.isfile(f_grads):
-            f = np.load(f_grads)
+            f = np.load(f_grads, allow_pickle=True)
             for par in f.files:
                 gradients[par] = f[par]
         else:
@@ -104,9 +119,8 @@ class weights(object):
                 grad = self.gradient(pts, par)
                 gradients[par] = np.c_[pts, grad]
 
-        if save:
-            os.makedirs("res", exist_ok=True)
-            np.savez(f_grads, **gradients)
+        os.makedirs(f_grads.split("/")[0], exist_ok=True)
+        np.savez(f_grads, **gradients)
         if output:
             return gradients
 
@@ -121,23 +135,23 @@ class weights(object):
 
     def get_weights(self, ref=100,
                     int_samples_func="ceil",
-                    save=True, output=True,
-                    overwrite=False):
+                    output=True, overwrite=False):
         """Calculate re-distribution weights of the sample points."""
         ifunc = getattr(np, int_samples_func)
-        f_weights = "_".join(filter(None, ["res/weights", self.pre])) + ".npz"
-        gradients = self.get_gradients(save=save,
-                                        output=output,
-                                        overwrite=overwrite)
+        f_weights = self.get_fname("weights")
+        gradients = self.get_gradients(output=output,
+                                       overwrite=overwrite)
         weights = dict.fromkeys(gradients)
         for par, grad in gradients.items():
             weights[par] = self.C(*grad.T)
         norm = (ref/np.product(list(weights.values())))**(1/len(self.pars))
+        # save the arc lengths before calculating weights
+        # relative to the requested number of samples (ref)
+        os.makedirs(f_weights.split("/")[0], exist_ok=True)
+        np.savez(f_weights, **weights)
+        # weight according to ref
         for par, w in weights.items():
             weights[par] = ifunc(norm*w).astype(int)
 
-        if save:
-            os.makedirs("res", exist_ok=True)
-            np.savez(f_weights, **weights)
         if output:
             return weights
