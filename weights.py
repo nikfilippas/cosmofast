@@ -77,14 +77,14 @@ class weights(object):
         fixed = list(set(self.cosmo_default.keys() - set(self.pars)))
         code = "/".join([dic, which]) + "_"
 
-        for par in self.pars:
+        for par in sorted(self.pars):
             code += "_".join([par,
                               str(self.priors[par][0]),
                               str(self.priors[par][1])])
             code += "_"
 
         if len(fixed) > 0:
-            for par in fixed:
+            for par in sorted(fixed):
                 code += "".join([par, str(self.cosmo_default[par])])
                 code += "_"
             code += "wpts%s.npz" % self.wpts
