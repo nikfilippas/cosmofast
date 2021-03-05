@@ -9,9 +9,9 @@ the nodes (centres of ND cubes).
 #TODO: possibility to interpolate a, k within blocks :: DONE
 #TODO: option to quadruple number of interpolators to interpolate all a, k :: NO NEED
 #TODO: if cosmo is the same, interplate a,k space and do not re-compute :: DONE
-#TODO: run profiler :: DONE
 #TODO: rescale cosmo parameters to mean nodal separation
 #TODO: sklearn optimal epsilon for all scales
+#TODO: run profiler
 #TODO: save/load interpolator
 
 ################################ BENCHMARKS ##################################
@@ -72,10 +72,8 @@ priors = {"h" : [0.65, 0.75],
           "sigma8": [0.77, 0.87]}
 
 testnum = 5
-test_cosmo = "nodes"  # {'nodes', 'antinodes', 'random'} - cosmo space
+test_cosmo = "antinodes"  # {'nodes', 'antinodes', 'random'} - cosmo space
 test_ak = "nodes"  # {'nodes', 'antinodes'} - (k,a)-space
-
-
 
 
 ## INTERPOLATOR ##
@@ -87,12 +85,11 @@ interp = interpolator(priors,
                       cosmo_default=None,
                       k_arr=k_arr,
                       a_arr=a_arr,
-                      samples=50,
+                      samples=100,
+                      a_blocksize=4,
+                      k_blocksize=8,
                       interpf="gaussian",
                       epsilon=0.1,
-                      a_blocksize=2,
-                      k_blocksize=2,
-                      prefix="rbf-gauss-2-narrow",
                       overwrite=False)
 
 
@@ -152,9 +149,9 @@ extent = (np.log10(k_arr[0]), np.log10(k_arr[-1]), a_arr[-1], a_arr[0])
 plt.figure()
 plt.imshow(d, aspect="auto", extent=extent)
 plt.colorbar()
-plt.savefig("benchmarks/accu-%d.1.png" % testnum)
+# plt.savefig("benchmarks/accu-%d.1.png" % testnum)
 
 # Plot X.2
 plt.figure()
 plt.plot(errs)
-plt.savefig("benchmarks/accu-%d.2.png" % testnum)
+# plt.savefig("benchmarks/accu-%d.2.png" % testnum)
