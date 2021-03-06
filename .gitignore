@@ -3,6 +3,7 @@ __pycache__/
 res/
 img/
 legacy/
+tests/Pk*
 .spyproject/
 
 # Files
