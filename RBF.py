@@ -1,19 +1,21 @@
 """Bump kernel RBF."""
-import warnings
 import numpy as np
 from scipy.interpolate import Rbf
 
 class BumpRBF(Rbf):
-    """Bump RBF kernel."""
+    """Bump RBF kernel.
+
+    .. math::
+        R = \\exp{\\left( -\\frac{1}{(\\epsilon r)^2} \\right)},
+        \\ ||r||<1/\epsilon
+
+    The bump function is compactly supported. It has gaussian-like
+    behavior, but concentrates the entire probability mass function
+    in the range :math:`||r||<1/\epsilon` The derivatives at the
+    boundaries are zero, and it is :math:`C^{\\infty}` differentiable."""
 
     def _h_bump(Rbf, r):
-        # optimization
-        r = np.atleast_1d(r)
-        if np.all(np.abs(r) >= Rbf.epsilon):
-            return np.zeros_like(r)
-        # catch RunTime warnings for infinite values
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            R = np.exp(-1 / (1 - (r/Rbf.epsilon)**2))
-        R[np.abs(r) >= Rbf.epsilon] = 0
+        conditions = [np.abs(r) < 1/Rbf.epsilon, np.abs(r) >= 1/Rbf.epsilon]
+        funcs = [lambda x: np.exp(-1 / (1 - (Rbf.epsilon*x)**2)), 0]
+        R = np.piecewise(r, conditions, funcs)
         return R
