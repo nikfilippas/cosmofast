@@ -1,6 +1,7 @@
 """
 Create a cosmological linear matter power spectrum interpolator.
 """
+import os
 import warnings
 import textwrap
 import psutil
@@ -99,13 +100,14 @@ class interpolator(object):
         cosmological dimension.
     overwrite : ``bool``
         Overwrite any saved output. Every choice of fixed cosmological
-        parameters (`cosmo_default`) and sampled cosmological parameters
-        with linear spacing (`wpts`) gets its own unique code, so it can be
-        reused. Defaults to `False`.
+        parameters (`cosmo_default`), sampled cosmological parameters
+        with linear spacing (`wpts`), and computed power spectrum (`Pk`)
+        gets its own unique code, so it can be reused. Defaults to `False`.
     Pk : ``numpy.array``
         **WARNING**: Only use for debugging purposes; ignore otherwise!
         Pass an external, pre-computed Pk (to save time re-computating it).
         It has to be compatible with all other class attributes.
+
 
     Attributes
     ----------
@@ -147,8 +149,7 @@ class interpolator(object):
                  a_blocksize=None, k_blocksize=None,
                  interpf="gaussian", epsilon=None, pStep=0.01,
                  int_samples_func="ceil", weigh_dims=True,
-                 wpts=None, overwrite=False,
-                 Pk=None):
+                 wpts=None, overwrite=False, Pk=None):
         # cosmo params
         self.priors = priors
         self.pars = list(self.priors.keys())
@@ -212,9 +213,35 @@ class interpolator(object):
         self.get_nodes()
         # sample parameter space at weighted axes
         if Pk is None:
-            Pk = self.Pka()
+            f_Pk = self.get_fname()
+            if not overwrite and os.path.isfile(f_Pk):
+                Pk = np.load(f_Pk)
+            else:
+                Pk = self.Pka()
+                np.save(f_Pk, Pk)
         # interpolate
         self.interpolate(Pk, rescale=True, pStep=self.pStep)
+
+    def get_fname(self, dic="res"):
+        """Produce saving code string."""
+        fixed = list(set(self.cosmo_default.keys() - set(self.pars)))
+        code = dic+"/"
+
+        for par in sorted(self.pars):
+            code += "_".join([par,
+                              str(self.priors[par][0]),
+                              str(self.priors[par][1])])
+            code += "_"
+
+        if len(fixed) > 0:
+            for par in sorted(fixed):
+                code += "".join([par, str(self.cosmo_default[par])])
+                code += "_"
+
+        code += "a_arr%s_%s_%s_"%(self.a_arr.min(),self.a_arr.max(),self.apts)
+        code += "k_arr%s_%s_%s_"%(self.k_arr.min(),self.k_arr.max(),self.kpts)
+        code += "samples%s.npy" % self.samples
+        return code
 
     def get_weights(self):
         """Calculate how the available samples are distributed
