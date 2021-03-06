@@ -222,6 +222,7 @@ class interpolator(object):
                 Pk = np.load(f_Pk)
             else:
                 Pk = self.Pka()
+                os.makedirs(f_Pk.split("/")[0], exist_ok=True)
                 np.save(f_Pk, Pk)
         # interpolate
         if not just_sample:
