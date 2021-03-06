@@ -29,6 +29,15 @@ class Cosmology(object):
         Key-value pairs of the queried cosmological parameters.
         Single values shall be used only; if you want to query several
         cosmologies, initialize another instance of this class.
+    a_Chb : ``bool``
+        Scale a_arr using fake Chebyshev nodes before interpolation.
+        No resampling needed. Supresses Runge's phenomenon near the edges.
+        Default is `False`.
+    k_Chb : ``bool``
+        Scale k_arr using fake Chebyshev nodes before interpolation.
+        No resampling needed. Supresses Runge's phenomenon near the edges.
+        Default is `False`.
+
 
     Attributes
     ----------
@@ -41,9 +50,12 @@ class Cosmology(object):
         (k,a)-space interpolator for input cosmological parameters.
     """
 
-    def __init__(self, interp, kw):
+    def __init__(self, interp, kw, a_Chb=False, k_Chb=False):
         self.interp = interp
         self.kw = kw
+        # interp
+        self.a_Chb = a_Chb
+        self.k_Chb = k_Chb
 
         self.vals = [self.kw[par] for par in self.interp.pars]
         self._check_compatibility(self.vals)
@@ -158,24 +170,35 @@ class Cosmology(object):
         """
         a, b = arr.min(), arr.max()
         CL = (b-a)/2 * np.cos(np.pi*(arr-a)/(b-a)) + (a+b)/2
-        # return CL[::-1]  # reverse the mapping
-        return arr
+        return CL[::-1]  # reverse the mapping
+        # return arr
 
     def interpolate(self):
         """Interpolate (k,a) space for faster evaluation time."""
         vals = np.atleast_1d(self.vals)
         k_arr = self.interp.k_arr
         a_arr = self.interp.a_arr
-
         lPk = np.log10(self.callF(*vals, a_arr, k_arr))
-        CL = Cosmology.Chebyshev  # use CL spacing
-        self.Fka = RectBivariateSpline(CL(a_arr), CL(np.log10(k_arr)), lPk)
+
+        # rescale using approximate Chebyshev nodes?
+        if self.a_Chb:
+            self._aF = Cosmology.Chebyshev
+        else:
+            self._aF = lambda x: x
+
+        if self.k_Chb:
+            self._kF = Cosmology.Chebyshev
+        else:
+            self._kF = lambda x: x
+
+        self.Fka = RectBivariateSpline(self._aF(a_arr),
+                                       self._kF(np.log10(k_arr)),
+                                       lPk)
 
     def linear_matter_power(self, k_arr, a_arr):
         """Interpolated linear matter power spectrum with
         (almost) the same function call as `pyccl.linear_matter_power`.
         Call the (k,a)-space interpolator on any a and k.
         """
-        CL = Cosmology.Chebyshev
-        lPk = self.Fka(CL(a_arr), CL(np.log10(k_arr)))
+        lPk = self.Fka(self._aF(a_arr), self._kF(np.log10(k_arr)))
         return 10**lPk.squeeze()
