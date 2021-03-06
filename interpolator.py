@@ -44,12 +44,8 @@ class interpolator(object):
     For `gaussian`, `multiquadric`, and `inverse` (quadric) RBFs,
     the hyperparameter `epsilon` controls the width of the kernel.
 
-    Class method `interpolator.linear_matter_power` ultimately has
-    the same function call as `pyccl.linear_matter_power`. That is
-    to introduce compatibility; however, serious speed-up can be
-    achieved if multiple cosmological proposals are made directly into
-    the `interpolator.F` attribute rather than calling it iteratively.
-    This is realized in `interpolator.callF`.
+    Interpolated parameters are rescaled so that a single value
+    of epsilon works for all dimensions (kernel is n-spherical).
 
 
     Parameters
@@ -83,8 +79,10 @@ class interpolator(object):
     epsilon : ``float``
         Adjustment knob for gaussian and multiquadric functions.
         A good start for cosmological interpolation is 50x the
-        average distance between the nodes.  #FIXME: new optimal epsilon
+        average distance between the nodes.
         See `scipy.interpolate.Rbf`.
+    pStep : ``float``
+        Uniform stepsize for all interpolated parameters.
     int_samples_func : ``str`` {'round', 'ceil', 'floor'}
         Method to approximate integer samples along each axis.
         'round' will make the effective number of samples nearest
@@ -103,10 +101,14 @@ class interpolator(object):
         parameters (`cosmo_default`) and sampled cosmological parameters
         with linear spacing (`wpts`) gets its own unique code, so it can be
         reused. Defaults to `False`.
+    Pk : ``numpy.array``
+        **WARNING**: Only use for debugging purposes; ignore otherwise!
+        Pass an external, pre-computed Pk (to save time re-computating it).
+        It has to be compatible with all other class attributes.
 
     Attributes
     ----------
-    All arguments become class attributes.
+    All (non-experimental) arguments become class attributes.
     Additional attributes are listed below.
 
     pars : ``list`` of ``str``
@@ -123,6 +125,14 @@ class interpolator(object):
         Coordinates of the nodal points.
     F : ``numpy.array`` of ``scipy.interpolate.rbf.Rbf`` (apts, kpts)
         Array containing the interpolators for each (k, a) combination.
+    rescale : ``numpy.array``
+        Rescale by factor. All interpolated dimensions are rescaled
+        before interpolation to get an n-spherical kerne with the same
+        shape parameter (epsilon) in every dimension. In this way,
+        epsilon works as a tuning parameter for the entire interpolation.
+        Elements are ordered according to `pars`.
+        If any of the (a, k) blocksizes are not 1 (i.e. they are
+        also interpolated), the respective parameter is also rescaled.
     _logger : ``numpy.array``
         Flag singular RBF interpolation matrices.
         Very large condition numbers effectively means that matrices
@@ -134,15 +144,16 @@ class interpolator(object):
     def __init__(self, priors, cosmo_default=None,
                  k_arr=None, a_arr=None, samples=50, *,
                  a_blocksize=None, k_blocksize=None,
-                 interpf="gaussian", epsilon=None,
+                 interpf="gaussian", epsilon=None, pStep=0.01,
                  int_samples_func="ceil", weigh_dims=True,
-                 wpts=None, overwrite=False):
+                 wpts=None, overwrite=False,
+                 Pk=None):
         # cosmo params
         self.priors = priors
         self.pars = list(self.priors.keys())
         self.cosmo_default = cosmo_default
         if self.cosmo_default is None:
-            print("Fixed cosmological parameters from Planck 2018.")
+            warnings.warn("Fixed cosmological parameters from Planck 2018.")
             self.cosmo_default = interpolator.Planck18()
         # k, a
         self.k_arr = np.sort(k_arr)
@@ -151,14 +162,15 @@ class interpolator(object):
         self.apts = len(self.a_arr)
         # interp
         self.samples = samples
-        self.interpf = interpf
-        self.epsilon = epsilon
         self.a_blocksize = 1 if a_blocksize is None else a_blocksize
         if self.apts % self.a_blocksize != 0:
             raise ValueError("blocksize should divide a_arr exactly")
         self.k_blocksize = 1 if k_blocksize is None else k_blocksize
         if self.kpts % self.k_blocksize != 0:
             raise ValueError("blocksize should divide k_arr exactly")
+        self.interpf = interpf
+        self.epsilon = epsilon
+        self.pStep = pStep
         if self.interpf not in ["multiquadric", "inverse", "gaussian"] \
            and self.epsilon is not None:
             warnings.warn("epsilon not defined for function %s" % self.interpf)
@@ -197,13 +209,21 @@ class interpolator(object):
         # build cosmological parameter space
         self.get_nodes()
         # sample parameter space at weighted axes
-        Pk = self.Pka()
+        if Pk is None:
+            Pk = self.Pka()
         # interpolate
-        self.interpolate(Pk)
+        self.interpolate(Pk, pStep=self.pStep)
 
     @classmethod
     def Planck18(interpolator):
-        """Return dictionary of Planck 2018 cosmology."""
+        """
+        Return dictionary of Planck 2018 cosmology.
+
+        This is only used to get relative sampling densities in the
+        cosmological parameter space, so even if a default fixed-params
+        dictionary is not set, sampling ultimately becomes slightly
+        less efficient.
+        """
         cosmo = {"Omega_c" : 0.2589,
                  "Omega_b" : 0.0486,
                  "h"       : 0.6774,
@@ -247,7 +267,7 @@ class interpolator(object):
         Pk = Pk.reshape(*np.r_[self.weights, self.apts, self.kpts])
         return Pk
 
-    def interpolate(self, Pk):
+    def interpolate(self, Pk, pStep=0.01):
         """
         Interpolate `P(k,a)`.
 
@@ -259,17 +279,45 @@ class interpolator(object):
 
         Achieve smoother interpolation over the extent of the power spectrum
         by interpolating :math:`log_{10}(Pk)` and :math:`log_{10}(k)`.
+
+        Rescale all interpolated dimensions to get an n-spherical kernel
+        with consistent shape parameter epsilon in every dimension.
         """
+        # behave consistently in logspace
         lPk = np.log10(Pk)
-        points = [pnts.tolist() for pnts in self.points]
+        lk_arr = np.log10(self.k_arr)
+        a_arr = self.a_arr
 
         # determine a, k number of blocks in each dimension
-        Na = self.apts//self.a_blocksize
-        Nk = self.kpts//self.k_blocksize
+        Na = self.apts // self.a_blocksize
+        Nk = self.kpts // self.k_blocksize
+
+        # rescale parameters to uniform stepsize
+        pars = self.pars.copy()
+        points = [pnts.tolist() for pnts in self.points]
+        if self.a_blocksize > 1:
+            points.extend([self.a_arr.tolist()])
+            pars.append("a")
+        if self.k_blocksize > 1:
+            points.extend([lk_arr.tolist()])
+            pars.append("k")
+        steps = np.array([p[1]-p[0] for p in points])
+        self.rescale = pStep/steps
+        points = [(r*np.asarray(p)).tolist()
+                  for r, p in zip(self.rescale, points)]
+        for par, pnt in zip(pars, points):  # verify everything works
+            assert np.allclose(np.diff(pnt), pStep), \
+            "Rescaling parameter %s failed. Maybe not linearly spaced?" % par
+
+        # redefinitions of parameters (order of ifs is important)
+        if self.k_blocksize > 1:
+            lk_arr = np.asarray(points.pop())
+        if self.a_blocksize > 1:
+            a_arr = np.asarray(points.pop())
 
         # find block boundaries
-        ablocks = np.asarray(np.split(self.a_arr, Na))
-        kblocks = np.asarray(np.split(np.log10(self.k_arr), Nk))
+        ablocks = np.asarray(np.split(a_arr, Na))
+        kblocks = np.asarray(np.split(lk_arr, Nk))
 
         # convenience functions
         rbf = lambda x: Rbf(*x.T, function=self.interpf, epsilon=self.epsilon)
