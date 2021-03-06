@@ -103,6 +103,9 @@ class interpolator(object):
         parameters (`cosmo_default`), sampled cosmological parameters
         with linear spacing (`wpts`), and computed power spectrum (`Pk`)
         gets its own unique code, so it can be reused. Defaults to `False`.
+    just_sample : ``bool``
+        Use this argument if you just want to sample and save the P(k,a).
+        No interpolation.
     Pk : ``numpy.array``
         **WARNING**: Only use for debugging purposes; ignore otherwise!
         Pass an external, pre-computed Pk (to save time re-computating it).
@@ -149,7 +152,8 @@ class interpolator(object):
                  a_blocksize=None, k_blocksize=None,
                  interpf="gaussian", epsilon=None, pStep=0.01,
                  int_samples_func="ceil", weigh_dims=True,
-                 wpts=None, overwrite=False, Pk=None):
+                 wpts=None, overwrite=False,
+                 just_sample=True, Pk=None):
         # cosmo params
         self.priors = priors
         self.pars = list(self.priors.keys())
@@ -220,7 +224,8 @@ class interpolator(object):
                 Pk = self.Pka()
                 np.save(f_Pk, Pk)
         # interpolate
-        self.interpolate(Pk, rescale=True, pStep=self.pStep)
+        if not just_sample:
+            self.interpolate(Pk, rescale=True, pStep=self.pStep)
 
     def get_fname(self, dic="res"):
         """Produce saving code string."""
