@@ -107,6 +107,14 @@ class Cosmology(object):
         a_idx = np.searchsorted(self.interp.a_arr, a_arr) // self.interp.a_blocksize
         k_idx = np.searchsorted(self.interp.k_arr, k_arr) // self.interp.k_blocksize
 
+        # rescale parameters back (order of ifs is important)
+        rescale = self.interp.rescale.tolist()
+        if self.interp.k_blocksize > 1:
+            k_arr = np.power(np.log10(self.interp.k_arr) * rescale.pop(), 10)
+        if self.interp.a_blocksize > 1:
+            a_arr = self.interp.a_arr * rescale.pop()
+        vals = np.asarray(rescale) * np.atleast_1d(self.vals)
+
         # cosmo : disassemble cosmological parameters
         points = [val.tolist() for val in np.atleast_2d(vals).T]
 
@@ -140,6 +148,19 @@ class Cosmology(object):
 
         return 10**lPk.squeeze()
 
+    @classmethod
+    def Chebyshev(Cosmology, arr):
+        """Map the input array to Chebyshev-Lovatto nodes to supress
+        Runge's phenomenon when interpolating.
+
+        Inspired by Davide Poggiali's 'FakeNodes':
+        https://github.com/pog87/FakeNodes
+        """
+        a, b = arr.min(), arr.max()
+        CL = (b-a)/2 * np.cos(np.pi*(arr-a)/(b-a)) + (a+b)/2
+        # return CL[::-1]  # reverse the mapping
+        return arr
+
     def interpolate(self):
         """Interpolate (k,a) space for faster evaluation time."""
         vals = np.atleast_1d(self.vals)
@@ -147,12 +168,14 @@ class Cosmology(object):
         a_arr = self.interp.a_arr
 
         lPk = np.log10(self.callF(*vals, a_arr, k_arr))
-        self.Fka = RectBivariateSpline(a_arr, np.log10(k_arr), lPk)
+        CL = Cosmology.Chebyshev  # use CL spacing
+        self.Fka = RectBivariateSpline(CL(a_arr), CL(np.log10(k_arr)), lPk)
 
     def linear_matter_power(self, k_arr, a_arr):
         """Interpolated linear matter power spectrum with
         (almost) the same function call as `pyccl.linear_matter_power`.
         Call the (k,a)-space interpolator on any a and k.
         """
-        lPk = self.Fka(a_arr, np.log10(k_arr))
+        CL = Cosmology.Chebyshev
+        lPk = self.Fka(CL(a_arr), CL(np.log10(k_arr)))
         return 10**lPk.squeeze()
