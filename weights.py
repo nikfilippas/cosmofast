@@ -80,7 +80,8 @@ class weights(object):
             for par in sorted(fixed):
                 code += "".join([par, str(self.cosmo_default[par])])
                 code += "_"
-            code += "wpts%s.npz" % self.wpts
+
+        code += "wpts%s.npz" % self.wpts
         return code
 
     def gradient(self, arr, key):
