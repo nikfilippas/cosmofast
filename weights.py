@@ -5,6 +5,9 @@ import os
 import numpy as np
 import pyccl as ccl
 from tqdm import tqdm
+from utils import arc
+from utils import linear_matter_power as linpow
+
 
 class weights(object):
     """
@@ -62,16 +65,6 @@ class weights(object):
                            self.priors[key][1],
                            self.wpts)
 
-    @classmethod
-    def linear_matter_power(weights, cosmo, k_arr, a_arr):
-        """Re-definition of `pyccl.linear_matter_power`
-        to accept `array-like` scale factor.
-        """
-        a_arr = np.atleast_1d(a_arr).astype(float)
-        k_arr = np.atleast_1d(k_arr).astype(float)
-        Pk = np.array([ccl.linear_matter_power(cosmo, k_arr, a) for a in a_arr])
-        return Pk.squeeze()
-
     def get_fname(self, which, /, dic="res"):
         """Produce saving code string."""
         fixed = list(set(self.cosmo_default.keys() - set(self.pars)))
@@ -96,9 +89,7 @@ class weights(object):
         for i, val in enumerate(tqdm(arr, desc=key)):
             kw[key] = val
             cosmo = ccl.Cosmology(**kw)
-            lPk_full[i] = np.log10(weights.linear_matter_power(cosmo,
-                                                               self.k_arr,
-                                                               self.a_arr))
+            lPk_full[i] = np.log10(linpow(cosmo, self.k_arr, self.a_arr))
         grads = np.max(np.gradient(lPk_full, axis=0), axis=(1,2))
         dx = np.gradient(arr)
         grads /= dx
@@ -124,15 +115,6 @@ class weights(object):
         if output:
             return gradients
 
-    @classmethod
-    def C(weights, x, y):
-        """Calculate the arc length of `y`."""
-        x = np.atleast_2d(x)
-        y = np.atleast_2d(y)
-        segments = np.sqrt(np.gradient(x, axis=-1)**2
-                           + np.gradient(y, axis=-1)**2)
-        return np.sum(segments, axis=-1).squeeze()
-
     def get_weights(self, ref=100,
                     int_samples_func="ceil",
                     output=True, overwrite=False):
@@ -143,7 +125,7 @@ class weights(object):
                                        overwrite=overwrite)
         weights = dict.fromkeys(gradients)
         for par, grad in gradients.items():
-            weights[par] = self.C(*grad.T)
+            weights[par] = arc(*grad.T)
         norm = (ref/np.product(list(weights.values())))**(1/len(self.pars))
         # save the arc lengths before calculating weights
         # relative to the requested number of samples (ref)

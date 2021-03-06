@@ -11,6 +11,7 @@ import pyccl as ccl
 from scipy.interpolate import Rbf
 from scipy.linalg.misc import LinAlgWarning
 from weights import weights as wts
+from utils import linear_matter_power as linpow
 
 
 class interpolator(object):
@@ -154,7 +155,8 @@ class interpolator(object):
         self.cosmo_default = cosmo_default
         if self.cosmo_default is None:
             warnings.warn("Fixed cosmological parameters from Planck 2018.")
-            self.cosmo_default = interpolator.Planck18()
+            from utils import Planck18
+            self.cosmo_default = Planck18()
         # k, a
         self.k_arr = np.sort(k_arr)
         self.kpts = len(self.k_arr)
@@ -212,24 +214,7 @@ class interpolator(object):
         if Pk is None:
             Pk = self.Pka()
         # interpolate
-        self.interpolate(Pk, pStep=self.pStep)
-
-    @classmethod
-    def Planck18(interpolator):
-        """
-        Return dictionary of Planck 2018 cosmology.
-
-        This is only used to get relative sampling densities in the
-        cosmological parameter space, so even if a default fixed-params
-        dictionary is not set, sampling ultimately becomes slightly
-        less efficient.
-        """
-        cosmo = {"Omega_c" : 0.2589,
-                 "Omega_b" : 0.0486,
-                 "h"       : 0.6774,
-                 "sigma8"  : 0.8159,
-                 "n_s"     : 0.9667}
-        return cosmo
+        self.interpolate(Pk, rescale=True, pStep=self.pStep)
 
     def get_weights(self):
         """Calculate how the available samples are distributed
@@ -263,11 +248,11 @@ class interpolator(object):
             kw = self.cosmo_default.copy()
             kw.update(dict(zip(self.pars, p)))
             cosmo = ccl.Cosmology(**kw)
-            Pk[i] = wts.linear_matter_power(cosmo, self.k_arr, self.a_arr)
+            Pk[i] = linpow(cosmo, self.k_arr, self.a_arr)
         Pk = Pk.reshape(*np.r_[self.weights, self.apts, self.kpts])
         return Pk
 
-    def interpolate(self, Pk, pStep=0.01):
+    def interpolate(self, Pk, rescale=True, pStep=0.01):
         """
         Interpolate `P(k,a)`.
 
@@ -283,37 +268,43 @@ class interpolator(object):
         Rescale all interpolated dimensions to get an n-spherical kernel
         with consistent shape parameter epsilon in every dimension.
         """
-        # behave consistently in logspace
+        def do_rescale(points, a_arr, lk_arr):
+            """Collect the entire rescaling routine in here."""
+            # rescale parameters to uniform stepsize
+            pars = self.pars.copy()
+            if self.a_blocksize > 1:
+                points.extend([self.a_arr.tolist()])
+                pars.append("a")
+            if self.k_blocksize > 1:
+                points.extend([lk_arr.tolist()])
+                pars.append("k")
+            steps = np.array([p[1]-p[0] for p in points])
+            self.rescale = self.pStep/steps
+            points = [(r*np.asarray(p)).tolist()
+                      for r, p in zip(self.rescale, points)]
+            for par, pnt in zip(pars, points):  # verify everything works
+                assert np.allclose(np.diff(pnt), self.pStep), \
+                "Rescaling parameter %s failed. Is it linearly spaced?" % par
+
+            # redefinitions of parameters (order of ifs is important)
+            if self.k_blocksize > 1:
+                lk_arr = np.asarray(points.pop())
+            if self.a_blocksize > 1:
+                a_arr = np.asarray(points.pop())
+
+            return points, a_arr, lk_arr
+
+        # define parameter space
         lPk = np.log10(Pk)
-        lk_arr = np.log10(self.k_arr)
+        points = [pnts.tolist() for pnts in self.points]
         a_arr = self.a_arr
+        lk_arr = np.log10(self.k_arr)
+        if rescale:
+            points, a_arr, lk_arr =  do_rescale(points, a_arr, lk_arr)
 
         # determine a, k number of blocks in each dimension
         Na = self.apts // self.a_blocksize
         Nk = self.kpts // self.k_blocksize
-
-        # rescale parameters to uniform stepsize
-        pars = self.pars.copy()
-        points = [pnts.tolist() for pnts in self.points]
-        if self.a_blocksize > 1:
-            points.extend([self.a_arr.tolist()])
-            pars.append("a")
-        if self.k_blocksize > 1:
-            points.extend([lk_arr.tolist()])
-            pars.append("k")
-        steps = np.array([p[1]-p[0] for p in points])
-        self.rescale = pStep/steps
-        points = [(r*np.asarray(p)).tolist()
-                  for r, p in zip(self.rescale, points)]
-        for par, pnt in zip(pars, points):  # verify everything works
-            assert np.allclose(np.diff(pnt), pStep), \
-            "Rescaling parameter %s failed. Maybe not linearly spaced?" % par
-
-        # redefinitions of parameters (order of ifs is important)
-        if self.k_blocksize > 1:
-            lk_arr = np.asarray(points.pop())
-        if self.a_blocksize > 1:
-            a_arr = np.asarray(points.pop())
 
         # find block boundaries
         ablocks = np.asarray(np.split(a_arr, Na))
