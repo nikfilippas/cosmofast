@@ -153,7 +153,7 @@ class interpolator(object):
                  interpf="gaussian", epsilon=None, pStep=0.01,
                  int_samples_func="ceil", weigh_dims=True,
                  wpts=None, overwrite=False,
-                 just_sample=True, Pk=None):
+                 just_sample=False, Pk=None):
         # cosmo params
         self.priors = priors
         self.pars = list(self.priors.keys())
@@ -213,6 +213,15 @@ class interpolator(object):
 
         # calculate parameter weights
         self.get_weights()
+        if (self.weights == 1).any():
+            warnings.warn(textwrap.fill(textwrap.dedent("""
+            Very small number of samples. Parameter space will not be
+            adequately sampled. Increasing the number of samples from 1
+            to 2 in parameter(s) %s.
+            """ % [par for i, par in enumerate(self.pars)
+                   if self.weights[i] == 1])))
+            self.weights[self.weights == 1] += 1
+
         # build cosmological parameter space
         self.get_nodes()
         # sample parameter space at weighted axes
