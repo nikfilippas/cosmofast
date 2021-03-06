@@ -9,6 +9,7 @@ priors = {"h" : [0.55, 0.91],
           "n_s": [0.87, 1.07]}
 
 ## INTERPOLATOR ##
+wpts = 32
 samples = 16**len(priors.keys())
 k_arr = np.logspace(-4, 2, 512)
 a_arr = np.linspace(0.1, 1, 32)
@@ -17,6 +18,7 @@ interp = interpolator(priors,
                       cosmo_default=None,
                       k_arr=k_arr,
                       a_arr=a_arr,
-                      samples=100,
+                      samples=samples,
+                      wpts=wpts,
                       overwrite=False,
                       just_sample=True)
