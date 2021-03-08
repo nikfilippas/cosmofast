@@ -65,7 +65,7 @@ class weights(object):
                            self.priors[key][1],
                            self.wpts)
 
-    def get_fname(self, which, /, dic="res"):
+    def get_fname(self, which, dic="res"):
         """Produce saving code string."""
         fixed = list(set(self.cosmo_default.keys() - set(self.pars)))
         code = "/".join([dic, which]) + "_"
