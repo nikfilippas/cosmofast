@@ -222,13 +222,7 @@ class interpolator(object):
         self.get_nodes()
         # sample parameter space at weighted axes
         if Pk is None:
-            f_Pk = self.get_fname()
-            if not overwrite and os.path.isfile(f_Pk):
-                Pk = np.load(f_Pk)
-            else:
-                Pk = self.Pka()
-                os.makedirs(f_Pk.split("/")[0], exist_ok=True)
-                np.save(f_Pk, Pk)
+            Pk = self.Pka()
         # interpolate
         if not just_sample:
             self.interpolate(Pk, rescale=True, pStep=self.pStep)
@@ -280,8 +274,17 @@ class interpolator(object):
         self.pos = np.vstack(list(map(np.ravel, mg))).T
 
     def Pka(self):
-        """Compute `P(k,a)` at each cosmological node."""
-        Pk = np.zeros((np.product(self.weights), self.apts, self.kpts))
+        """Compute `P(k,a)` at each cosmological node.
+        Using `numpy.memmap` to avoid MemoryError for large sample numbers.
+        """
+        f_Pk = self.get_fname()
+        if not self.overwrite and os.path.isfile(f_Pk):
+            Pk = np.load(f_Pk, mmap_mode="r")
+            return Pk
+
+        os.makedirs(f_Pk.split("/")[0], exist_ok=True)
+        Pk = np.memmap(f_Pk, dtype=float, mode="w+",
+                shape=((np.product(self.weights), self.apts, self.kpts)))
         for i, p in enumerate(tqdm(self.pos, desc="Sampling P(k,a) grid")):
             kw = self.cosmo_default.copy()
             kw.update(dict(zip(self.pars, p)))
