@@ -36,3 +36,16 @@ def arc(x, y):
     segments = np.sqrt(np.gradient(x, axis=-1)**2
                        + np.gradient(y, axis=-1)**2)
     return np.sum(segments, axis=-1).squeeze()
+
+
+def imshow(arr, new=True, **kw):
+    import matplotlib.pyplot as plt
+    if new:
+        plt.figure()
+    plt.imshow(arr, **kw)
+
+def plot(a1, a2, new=True, **kw):
+    import matplotlib.pyplot as plt
+    if new:
+        plt.figure()
+    plt.plot(a1, a2, **kw)
