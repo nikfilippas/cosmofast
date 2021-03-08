@@ -5,22 +5,25 @@ We test the approximation at the grid nodes and expect
 high accuracy, but also test it at the midpoints between
 the nodes (centres of ND cubes).
 
-#FIXME: k-blocking interpolation returns nan's
-#TODO: blocks of interpolators on a, k - constructing & calling :: DONE
-#TODO: possibility to interpolate a, k within blocks :: DONE
-#TODO: option to quadruple number of interpolators to interpolate all a, k :: NO NEED
-#TODO: if cosmo is the same, interplate a,k space and do not re-compute :: DONE
-#TODO: rescale cosmo parameters to fixed step :: DONE
+#FIXME: blocksize decreases accuracy at the BAO scales??
+
 #TODO: sklearn optimal epsilon for all scales ??? (On^2)
 #TODO: check Fortran spline routines
-#TODO: my own RBF (bump gaussian) :: DONE
-#TODO: fake nodes (Chebyshev) :: DONE
 #TODO: interpolate slightly outside range to eliminate Runge's phenomenon
-#TODO: recale a_arr and k_arr during interpolation with RectBivariate
-#TODO: run profiler
 #TODO: save/load interpolator
-#TODO: numpy.memmap for full-scale Pk ~65 GB size
 #TODO: overcome memoery constraint by finding neighbours within distance of bump RBF
+#TODO: run profiler
+
+#TODO: blocks of interpolators on a, k - constructing & calling :: DONE
+#TODO: possibility to interpolate a, k within blocks :: DONE
+#TODO: if cosmo is the same, interplate a,k space and do not re-compute :: DONE
+#TODO: rescale cosmo parameters to fixed step :: DONE
+#TODO: my own RBF (bump gaussian) :: DONE (+ polyharmonic splines)
+#TODO: fake nodes (Chebyshev) :: DONE
+#TODO: numpy.memmap for full-scale Pk ~65 GB size :: DONE
+
+#TODO: option to quadruple number of interpolators to interpolate all a, k :: NO NEED
+#TODO: recale a_arr and k_arr during interpolation with RectBivariate :: NO NEED
 
 ################################ BENCHMARKS ##################################
 ==============================================================================
@@ -86,8 +89,8 @@ priors = {"h" : [0.55, 0.595],
 #           "Omega_b": [0.03, 0.07]}
 
 # epsilon = 0.08
-# priors = {"h" : [0.65, 0.75],
-#           "sigma8": [0.77, 0.87]}
+priors = {"h" : [0.65, 0.75],
+          "sigma8": [0.77, 0.87]}
 
 testnum = 5
 test_cosmo = "antinodes"  # {'nodes', 'antinodes', 'random'} - cosmo space
@@ -110,7 +113,10 @@ interp = interpolator(priors,
                       pStep=0.01,
                       overwrite=False,
                       Pk=None)
-
+# save
+interp.save()
+# load
+interp = np.load(interp.get_fname("interp"), allow_pickle=True).item()
 
 ## PREP TESTING ##
 if "nodes" in test_cosmo:
@@ -164,7 +170,7 @@ print("errors: (min,avg,max)=(%.2e,%.2e,%.2e)" % (e1, e2, e3))
 norm = mpl.colors.SymLogNorm(1e-2, base=10)
 extent = (np.log10(k_arr[0]), np.log10(k_arr[-1]), a_arr[-1], a_arr[0])
 plt.figure()
-plt.imshow(d, aspect="auto", extent=extent)
+plt.imshow(np.log10(d), aspect="auto", extent=extent)
 plt.colorbar()
 # plt.savefig("benchmarks/accu-%d.1.png" % testnum)
 
