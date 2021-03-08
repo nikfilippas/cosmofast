@@ -227,10 +227,10 @@ class interpolator(object):
         if not just_sample:
             self.interpolate(Pk, rescale=True, pStep=self.pStep)
 
-    def get_fname(self, dic="res"):
+    def get_fname(self, which="", dic="res"):
         """Produce saving code string."""
         fixed = list(set(self.cosmo_default.keys() - set(self.pars)))
-        code = dic+"/"
+        code = "/".join([dic, which]) + "_"
 
         for par in sorted(self.pars):
             code += "_".join([par,
@@ -277,9 +277,9 @@ class interpolator(object):
         """Compute `P(k,a)` at each cosmological node.
         Using `numpy.memmap` to avoid MemoryError for large sample numbers.
         """
-        f_Pk = self.get_fname()
+        f_Pk = self.get_fname("Pk")
         if not self.overwrite and os.path.isfile(f_Pk):
-            Pk = np.load(f_Pk, mmap_mode="r")
+            Pk = np.load(f_Pk, mmap_mode="r", allow_pickle=True)
             return Pk
 
         os.makedirs(f_Pk.split("/")[0], exist_ok=True)
@@ -389,3 +389,9 @@ class interpolator(object):
                         points.pop()
                 if self.a_blocksize > 1:
                     points.pop()
+
+    def save(self, path=None):
+        """Save the class instance to an '.npy' file with pickle."""
+        if path is None:
+            path = self.get_fname("interp")
+        np.save(path, self, allow_pickle=True)
