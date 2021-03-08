@@ -5,14 +5,22 @@ We test the approximation at the grid nodes and expect
 high accuracy, but also test it at the midpoints between
 the nodes (centres of ND cubes).
 
+#FIXME: k-blocking interpolation returns nan's
 #TODO: blocks of interpolators on a, k - constructing & calling :: DONE
 #TODO: possibility to interpolate a, k within blocks :: DONE
 #TODO: option to quadruple number of interpolators to interpolate all a, k :: NO NEED
 #TODO: if cosmo is the same, interplate a,k space and do not re-compute :: DONE
-#TODO: rescale cosmo parameters to mean nodal separation
-#TODO: sklearn optimal epsilon for all scales
+#TODO: rescale cosmo parameters to fixed step :: DONE
+#TODO: sklearn optimal epsilon for all scales ??? (On^2)
+#TODO: check Fortran spline routines
+#TODO: my own RBF (bump gaussian) :: DONE
+#TODO: fake nodes (Chebyshev) :: DONE
+#TODO: interpolate slightly outside range to eliminate Runge's phenomenon
+#TODO: recale a_arr and k_arr during interpolation with RectBivariate
 #TODO: run profiler
 #TODO: save/load interpolator
+#TODO: numpy.memmap for full-scale Pk ~65 GB size
+#TODO: overcome memoery constraint by finding neighbours within distance of bump RBF
 
 ################################ BENCHMARKS ##################################
 ==============================================================================
@@ -52,9 +60,11 @@ errors: (min,avg,max)=(6.24e-03,6.35e-03,6.58e-03)
 import numpy as np
 from numpy.random import uniform
 import pyccl as ccl
-from weights import weights as wts
 from interpolator import interpolator
+from RBF import RBF_ext
 from cosmo import Cosmology
+from utils import Planck18
+from utils import linear_matter_power as linpow
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
@@ -64,17 +74,24 @@ import matplotlib.pyplot as plt
 #           "Omega_c": [0.1, 0.9],
 #           "n_s": [0.87, 1.07]}
 
+priors = {"h" : [0.55, 0.595],
+          "sigma8": [0.50, 0.59375],
+          "Omega_b": [0.03, 0.0345],
+          "Omega_c": [0.1, 0.2],
+          "n_s": [0.87, 0.895]}
+
+# epsilon = 0.16
 # priors = {"h" : [0.55, 0.91],
 #           "sigma8": [0.50, 1.25],
 #           "Omega_b": [0.03, 0.07]}
 
-priors = {"h" : [0.65, 0.75],
-          "sigma8": [0.77, 0.87]}
+# epsilon = 0.08
+# priors = {"h" : [0.65, 0.75],
+#           "sigma8": [0.77, 0.87]}
 
 testnum = 5
 test_cosmo = "antinodes"  # {'nodes', 'antinodes', 'random'} - cosmo space
 test_ak = "nodes"  # {'nodes', 'antinodes'} - (k,a)-space
-
 
 ## INTERPOLATOR ##
 samples = 7**len(priors.keys())
@@ -85,12 +102,14 @@ interp = interpolator(priors,
                       cosmo_default=None,
                       k_arr=k_arr,
                       a_arr=a_arr,
-                      samples=50,
+                      samples=100,
                       a_blocksize=1,
-                      k_blocksize=8,
+                      k_blocksize=1,
                       interpf="gaussian",
-                      epsilon=0.1,
-                      overwrite=False)
+                      epsilon=0.08,
+                      pStep=0.01,
+                      overwrite=False,
+                      Pk=None)
 
 
 ## PREP TESTING ##
@@ -119,13 +138,13 @@ elif test_ak == "antinodes":
 
 
 ## TESTING ##
-kw = interpolator.Planck18()
+kw = Planck18()
 res = []
 for pnt in points:
     kw.update(dict(zip(interp.pars, pnt)))  # update cosmology
     # CCL
     cosmo = ccl.Cosmology(**kw)
-    CCL = wts.linear_matter_power(cosmo, k_arr, a_arr)
+    CCL = linpow(cosmo, k_arr, a_arr)
     # COSMOFAST
     csm = Cosmology(interp, kw)
     NICK = csm.linear_matter_power(k_arr, a_arr)
@@ -153,3 +172,14 @@ plt.colorbar()
 plt.figure()
 plt.plot(errs)
 # plt.savefig("benchmarks/accu-%d.2.png" % testnum)
+
+
+# plt.figure()
+# tst = np.abs(1-NICK/CCL)
+# # tst[tst <= 5e-4] = np.nan
+# plt.imshow(tst, aspect="auto",
+#            extent=(np.log10(interp.k_arr[0]),
+#                    np.log10(interp.k_arr[-1]),
+#                    a_arr[-1],
+#                    a_arr[0]))
+# plt.colorbar()
