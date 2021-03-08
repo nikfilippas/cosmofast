@@ -122,7 +122,7 @@ class Cosmology(object):
         # rescale parameters back (order of ifs is important)
         rescale = self.interp.rescale.tolist()
         if self.interp.k_blocksize > 1:
-            k_arr = np.power(np.log10(self.interp.k_arr) * rescale.pop(), 10)
+            k_arr = np.power(10, np.log10(self.interp.k_arr) * rescale.pop())
         if self.interp.a_blocksize > 1:
             a_arr = self.interp.a_arr * rescale.pop()
         vals = np.asarray(rescale) * np.atleast_1d(self.vals)
