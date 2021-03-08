@@ -178,10 +178,6 @@ class interpolator(object):
         self.interpf = interpf
         self.epsilon = epsilon
         self.pStep = pStep
-        if self.interpf not in ["multiquadric", "inverse", "gaussian"] \
-           and self.epsilon is not None:
-            warnings.warn("epsilon not defined for function %s" % self.interpf)
-            self.epsilon = None
         self.int_samples_func = int_samples_func
         # weights
         self.weigh_dims = weigh_dims
