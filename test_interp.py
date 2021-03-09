@@ -7,6 +7,7 @@ the nodes (centres of ND cubes).
 
 #FIXME: blocksize decreases accuracy at the BAO scales??
 
+#TODO: sparse distance matrices to overcome RAM issue (KD-tree not working)
 #TODO: sklearn optimal epsilon for all scales ??? (On^2)
 #TODO: check Fortran spline routines
 #TODO: interpolate slightly outside range to eliminate Runge's phenomenon
