@@ -112,7 +112,8 @@ interp = interpolator(priors,
                       epsilon=0.08,
                       pStep=0.01,
                       overwrite=False,
-                      Pk=None)
+                      Pk=None,
+                      just_sample=False)
 # save
 interp.save()
 # load

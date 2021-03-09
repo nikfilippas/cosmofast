@@ -199,7 +199,7 @@ class interpolator(object):
             at least %d times.
             """ % (mn, ma, int(mn/ma)))))
         elif mn/ma < 0.85:
-            print(textwrap.fill(textwrap.dedent("""
+            warnings.warn(textwrap.fill(textwrap.dedent("""
             PSA: With current memory usage, total blocksize can be
             increased %.1f times. This will result to %.1f faster evaluation
             time when calling the interpolator at a single scale factor.
@@ -222,10 +222,10 @@ class interpolator(object):
         self.get_nodes()
         # sample parameter space at weighted axes
         if Pk is None:
-            Pk = self.Pka()
+            self.Pka()
         # interpolate
         if not just_sample:
-            self.interpolate(Pk, rescale=True, pStep=self.pStep)
+            self.interpolate(rescale=True, pStep=self.pStep)
 
     def get_fname(self, which="", dic="res"):
         """Produce saving code string."""
@@ -279,21 +279,24 @@ class interpolator(object):
         """
         f_Pk = self.get_fname("Pk")
         if not self.overwrite and os.path.isfile(f_Pk):
-            Pk = np.load(f_Pk, mmap_mode="r", allow_pickle=True)
-            return Pk
+            return
 
+        # create mmap array
+        shp = (np.product(self.weights), self.apts, self.kpts)
         os.makedirs(f_Pk.split("/")[0], exist_ok=True)
-        Pk = np.memmap(f_Pk, dtype=float, mode="w+",
-                shape=((np.product(self.weights), self.apts, self.kpts)))
+        Pk = np.memmap(f_Pk, dtype=float, mode="w+", shape=shp)
+        del Pk
+
         for i, p in enumerate(tqdm(self.pos, desc="Sampling P(k,a) grid")):
             kw = self.cosmo_default.copy()
             kw.update(dict(zip(self.pars, p)))
             cosmo = ccl.Cosmology(**kw)
-            Pk[i] = linpow(cosmo, self.k_arr, self.a_arr)
-        Pk = Pk.reshape(*np.r_[self.weights, self.apts, self.kpts])
-        return Pk
+            # open, write, flush
+            Pk = np.memmap(f_Pk, dtype=float, mode="r+", shape=shp)
+            Pk[i, :] = linpow(cosmo, self.k_arr, self.a_arr)
+            del Pk
 
-    def interpolate(self, Pk, rescale=True, pStep=0.01):
+    def interpolate(self, rescale=True, pStep=0.01):
         """
         Interpolate `P(k,a)`.
 
@@ -335,8 +338,12 @@ class interpolator(object):
 
             return points, a_arr, lk_arr
 
+        # define memory map parameters
+        f_Pk = self.get_fname()
+        shp = tuple(np.r_[self.weights, self.apts, self.kpts].tolist())
+        Pk = np.memmap(f_Pk, dtype=float, shape=shp, mode="c")
+
         # define parameter space
-        lPk = np.log10(Pk)
         points = [pnts.tolist() for pnts in self.points]
         a_arr = self.a_arr
         lk_arr = np.log10(self.k_arr)
@@ -381,14 +388,16 @@ class interpolator(object):
                     if self.k_blocksize > 1:
                         points.extend([kb.tolist()])
 
-                    # can't interpolate dims of size 1 - squeeze them out
-                    lPka = lPk[..., idx1a:idx2a, idx1k:idx2k].squeeze()
+                    lPka = np.log10(Pk[..., idx1a:idx2a, idx1k:idx2k])
+                    lPka = lPka.squeeze()  # squeeze out dims of size 1
                     func(points, lPka)
 
                     if self.k_blocksize > 1:
                         points.pop()
                 if self.a_blocksize > 1:
                     points.pop()
+
+        del Pk  # flush to disk (no change because mode 'c' is enabled)
 
     def save(self, path=None):
         """Save the class instance to an '.npy' file with pickle."""
