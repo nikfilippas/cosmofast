@@ -22,8 +22,8 @@ class RBF_ext(Rbf):
         in the range :math:`||r||<1/\epsilon` The derivatives at the
         boundaries are zero, and it is :math:`C^{\\infty}` differentiable.
         """
-        conditions = [r < 1/Rbf.epsilon, r >= 1/Rbf.epsilon]
-        funcs = [lambda x: np.exp(-1 / (1 - (Rbf.epsilon*x)**2)), 0]
+        conditions = [r < Rbf.epsilon, r >= Rbf.epsilon]
+        funcs = [lambda x: np.exp(-1 / (1 - (x/Rbf.epsilon)**2)), 0]
         R = np.piecewise(r, conditions, funcs)
         return R
 
@@ -53,11 +53,18 @@ class RBF_ext(Rbf):
             R = np.piecewise(r, conditions, funcs)
             return R
 
+    def _h_modgaussian(Rbf, r):
+        """Modified gaussian which becomes zero at large distances."""
+        conditions = [r < Rbf.epsilon, r >= Rbf.epsilon]
+        funcs = [lambda x: np.exp(-(x/Rbf.epsilon)**2), 0]
+        R = np.piecewise(r, conditions, funcs)
+        return R
+
 
 # repeat funcs for direct call (debugging only)
 def _h_bump(r, epsilon):
-    conditions = [np.abs(r) < 1/epsilon, np.abs(r) >= 1/epsilon]
-    funcs = [lambda x: np.exp(-1 / (1 - (epsilon*x)**2)), 0]
+    conditions = [np.abs(r) < epsilon, np.abs(r) >= epsilon]
+    funcs = [lambda x: np.exp(-1 / (1 - (x/epsilon)**2)), 0]
     R = np.piecewise(r, conditions, funcs)
     return R
 
@@ -78,3 +85,10 @@ def _h_polyharmonic(r, epsilon):
                  lambda x: x**epsilon*np.log(x)]
         R = np.piecewise(r, conditions, funcs)
         return R
+
+def _h_modgaussian(r, epsilon):
+    """Modified gaussian which becomes zero at large distances."""
+    conditions = [np.abs(r) < 2*epsilon, np.abs(r) >= 2*epsilon]
+    funcs = [lambda x: np.exp(-(x/epsilon)**2), 0]
+    R = np.piecewise(r, conditions, funcs)
+    return R
