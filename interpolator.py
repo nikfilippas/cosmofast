@@ -274,31 +274,38 @@ class interpolator(object):
         self.pos = np.vstack(list(map(np.ravel, mg))).T
 
     def Pka(self):
-        """Compute `P(k,a)` at each cosmological node.
+        """Compute the fractional error between the CAMB `P(k,a)`
+        and the Eisenstein & Hu `P(k,a)` at each cosmological node.
         Using `numpy.memmap` to avoid MemoryError for large sample numbers.
         """
-        f_Pk = self.get_fname("Pk")
-        if not self.overwrite and os.path.isfile(f_Pk):
+        f_err = self.get_fname("err")
+        if not self.overwrite and os.path.isfile(f_err):
             return
 
         # create mmap array
         shp = (np.product(self.weights), self.apts, self.kpts)
-        os.makedirs(f_Pk.split("/")[0], exist_ok=True)
-        Pk = np.memmap(f_Pk, dtype=float, mode="w+", shape=shp)
-        del Pk
+        os.makedirs(f_err.split("/")[0], exist_ok=True)
+        err = np.memmap(f_err, dtype=float, mode="w+", shape=shp)
+        del err
 
         for i, p in enumerate(tqdm(self.pos, desc="Sampling P(k,a) grid")):
             kw = self.cosmo_default.copy()
             kw.update(dict(zip(self.pars, p)))
-            cosmo = ccl.Cosmology(**kw)
+
+            cosmo_eh = ccl.Cosmology(**kw, transfer_function="eisenstein_hu")
+            Pl_eh = linpow(cosmo_eh, self.k_arr, self.a_arr)
+
+            cosmo_0 = ccl.Cosmology(**kw, transfer_function="boltzmann_camb")
+            Pl_0 = linpow(cosmo_0, self.k_arr, self.a_arr)
+
             # open, write, flush
-            Pk = np.memmap(f_Pk, dtype=float, mode="r+", shape=shp)
-            Pk[i, :] = linpow(cosmo, self.k_arr, self.a_arr)
-            del Pk
+            err = np.memmap(f_err, dtype=float, mode="r+", shape=shp)
+            err[i, :] = Pl_eh / Pl_0
+            del err
 
     def interpolate(self, rescale=True, pStep=0.01):
         """
-        Interpolate `P(k,a)`.
+        Interpolate the sampled points.
 
         Overcome memory constraints in the calculation of
         the metric distance, by taking advantage of `a_arr` and `k_arr`
