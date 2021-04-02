@@ -9,7 +9,7 @@ from utils import arc
 from utils import linear_matter_power as linpow
 
 
-class weights(object):
+class Weights(object):
     """
     Deduce how the available sampling points should be
     spread along each cosmological dimension.
