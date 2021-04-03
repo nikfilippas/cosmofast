@@ -4,7 +4,9 @@ Call the interpolator.
 import textwrap
 from itertools import product
 import numpy as np
+import pyccl as ccl
 from scipy.interpolate import RectBivariateSpline
+from utils import linear_matter_power as linpow
 
 
 class Cosmology(object):
@@ -21,13 +23,13 @@ class Cosmology(object):
 
     Parameters
     ----------
-    interp : ``interpolator.interpolator`` object
-        And object of the `interpolator` class. Contains the interpolators
+    interp : ``sampler.Sampler`` object
+        And object of the `Sampler` class. Contains the interpolators
         along cosmo-, k-, and a- spaces, as well as information on their
         construction and limitations.
     kw : ``dict``
         Key-value pairs of the queried cosmological parameters.
-        Single values shall be used only; if you want to query several
+        Single values shall be used only; to query several different
         cosmologies, initialize another instance of this class.
     a_Chb : ``bool``
         Scale a_arr using fake Chebyshev nodes before interpolation.
@@ -131,7 +133,7 @@ class Cosmology(object):
         points = [val.tolist() for val in np.atleast_2d(vals).T]
 
         # query values from block grid
-        lPk = np.zeros((len(a_arr), len(k_arr)))
+        err = np.zeros((len(a_arr), len(k_arr)))
         for ia, fa in enumerate(self.interp.F):
             if ia not in a_idx:
                 continue
@@ -151,14 +153,14 @@ class Cosmology(object):
                 ask = np.asarray(list(product(*points)))
                 block = fka(*ask.T).reshape((self.interp.a_blocksize,
                                              self.interp.k_blocksize))
-                lPk[idx1a:idx2a, idx1k:idx2k] = block
+                err[idx1a:idx2a, idx1k:idx2k] = block
 
                 if len(k_use) > 1:
                     points.pop()
             if len(a_use) > 1:
                 points.pop()
 
-        return 10**lPk.squeeze()
+        return err.squeeze()
 
     @classmethod
     def Chebyshev(Cosmology, arr):
@@ -171,14 +173,17 @@ class Cosmology(object):
         a, b = arr.min(), arr.max()
         CL = (b-a)/2 * np.cos(np.pi*(arr-a)/(b-a)) + (a+b)/2
         return CL[::-1]  # reverse the mapping
-        # return arr
 
     def interpolate(self):
         """Interpolate (k,a) space for faster evaluation time."""
         vals = np.atleast_1d(self.vals)
         k_arr = self.interp.k_arr
         a_arr = self.interp.a_arr
-        lPk = np.log10(self.callF(*vals, a_arr, k_arr))
+
+        # Eisenstein & Hu approximation
+        cosmo = ccl.Cosmology(**self.kw, transfer_function="eisenstein_hu")
+        Pk = linpow(cosmo, k_arr, a_arr)
+        Pk /= self.callF(*vals, a_arr, k_arr)
 
         # rescale using approximate Chebyshev nodes?
         if self.a_Chb:
@@ -193,7 +198,7 @@ class Cosmology(object):
 
         self.Fka = RectBivariateSpline(self._aF(a_arr),
                                        self._kF(np.log10(k_arr)),
-                                       lPk)
+                                       np.log10(Pk))
 
     def linear_matter_power(self, k_arr, a_arr):
         """Interpolated linear matter power spectrum with
