@@ -15,16 +15,18 @@ the nodes (centres of ND cubes).
 #TODO: overcome memoery constraint by finding neighbours within distance of bump RBF
 #TODO: run profiler
 
-#TODO: blocks of interpolators on a, k - constructing & calling :: DONE
-#TODO: possibility to interpolate a, k within blocks :: DONE
-#TODO: if cosmo is the same, interplate a,k space and do not re-compute :: DONE
 #TODO: rescale cosmo parameters to fixed step :: DONE
-#TODO: my own RBF (bump gaussian) :: DONE (+ polyharmonic splines)
 #TODO: fake nodes (Chebyshev) :: DONE
-#TODO: numpy.memmap for full-scale Pk ~65 GB size :: DONE
 
-#TODO: option to quadruple number of interpolators to interpolate all a, k :: NO NEED
-#TODO: recale a_arr and k_arr during interpolation with RectBivariate :: NO NEED
+############ BF priors ##############
+# epsilon = 0.16
+# priors = {"h" : [0.55, 0.91],
+#           "sigma8": [0.50, 1.25],
+#           "Omega_b": [0.03, 0.07]}
+
+# epsilon = 0.08
+# priors = {"h" : [0.65, 0.75],
+#           "sigma8": [0.77, 0.87]}
 
 ################################ BENCHMARKS ##################################
 ==============================================================================
@@ -64,7 +66,7 @@ errors: (min,avg,max)=(6.24e-03,6.35e-03,6.58e-03)
 import numpy as np
 from numpy.random import uniform
 import pyccl as ccl
-from interpolator import interpolator
+from sampler import Sampler
 from RBF import RBF_ext
 from cosmo import Cosmology
 from utils import Planck18
@@ -72,53 +74,37 @@ from utils import linear_matter_power as linpow
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
-# priors = {"h" : [0.55, 0.91],
-#           "sigma8": [0.50, 1.25],
-#           "Omega_b": [0.03, 0.07],
-#           "Omega_c": [0.1, 0.9],
-#           "n_s": [0.87, 1.07]}
+priors = {"Omega_c": [0.15, 0.30],
+          "h"      : [0.55, 0.91],
+          "Omega_b": [0.03, 0.07]}
 
-priors = {"h" : [0.55, 0.595],
-          "sigma8": [0.50, 0.59375],
-          "Omega_b": [0.03, 0.0345],
-          "Omega_c": [0.1, 0.2],
-          "n_s": [0.87, 0.895]}
-
-# epsilon = 0.16
-# priors = {"h" : [0.55, 0.91],
-#           "sigma8": [0.50, 1.25],
-#           "Omega_b": [0.03, 0.07]}
-
-# epsilon = 0.08
-priors = {"h" : [0.65, 0.75],
-          "sigma8": [0.77, 0.87]}
 
 testnum = 5
 test_cosmo = "antinodes"  # {'nodes', 'antinodes', 'random'} - cosmo space
-test_ak = "nodes"  # {'nodes', 'antinodes'} - (k,a)-space
+test_ak = "antinodes"  # {'nodes', 'antinodes'} - (k,a)-space
 
-## INTERPOLATOR ##
-samples = 7**len(priors.keys())
+## SAMPLER ##
+samples = 500# 7**len(priors.keys())
 k_arr = np.logspace(-4, 2, 512)
 a_arr = np.linspace(0.1, 1, 16)
 
-interp = interpolator(priors,
-                      cosmo_default=None,
-                      k_arr=k_arr,
-                      a_arr=a_arr,
-                      samples=100,
-                      a_blocksize=1,
-                      k_blocksize=1,
-                      interpf="gaussian",
-                      epsilon=0.08,
-                      pStep=0.01,
-                      overwrite=False,
-                      Pk=None,
-                      just_sample=False)
+s = Sampler(priors, k_arr, a_arr,
+            cosmo_default=None,
+            samples=samples,
+            weigh_dims=False,
+            overwrite=False)
+s.sample()
+
+s.interpolate(a_blocksize=4,
+              k_blocksize=4,
+              interpf="gaussian",
+              epsilon=0.03,
+              pStep=0.01)
+
 # save
-interp.save()
+s.save()
 # load
-interp = np.load(interp.get_fname("interp"), allow_pickle=True).item()
+interp = np.load(s.get_fname("interp"), allow_pickle=True).item()
 
 ## PREP TESTING ##
 if "nodes" in test_cosmo:
@@ -172,7 +158,7 @@ print("errors: (min,avg,max)=(%.2e,%.2e,%.2e)" % (e1, e2, e3))
 norm = mpl.colors.SymLogNorm(1e-2, base=10)
 extent = (np.log10(k_arr[0]), np.log10(k_arr[-1]), a_arr[-1], a_arr[0])
 plt.figure()
-plt.imshow(np.log10(d), aspect="auto", extent=extent)
+plt.imshow(d, aspect="auto", extent=extent, interpolation="nearest")
 plt.colorbar()
 # plt.savefig("benchmarks/accu-%d.1.png" % testnum)
 
