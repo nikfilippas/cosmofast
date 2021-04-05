@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 pre = "_P18"  # prefix
 
 # Cosmology
-q = np.load("res/pts%s.npz" % pre)
+q = np.load("../res/pts%s.npz" % pre)
 Oc_arr, Ob_arr, h_arr, s8_arr, ns_arr = [q[f] for f in q.files]
 kw = {"Omega_c" : Oc_arr.mean(),
       "Omega_b" : Ob_arr.mean(),
@@ -17,7 +17,7 @@ kw = {"Omega_c" : Oc_arr.mean(),
       "n_s"     : ns_arr.mean()}
 
 # Interpolate
-q = np.load("res/grads%s.npz" % pre)
+q = np.load("../res/grads%s.npz" % pre)
 gOc, gOb, gh, gs8, gns = [q[f] for f in q.files]
 
 gOcf = interp1d(Oc_arr, gOc, kind="linear", bounds_error=False, fill_value="extrapolate")
@@ -59,4 +59,4 @@ if pre == "":
     ax.plot(vals, Grad/5, "k", lw=2, label=r"$\sum {\frac{\partial P_i(k,a)}{\partial \lambda_i}}$")
 
 ax.legend(loc="upper right", ncol=2, fontsize=12)
-fig.savefig("img/grads%s.pdf" % pre, bbox_inches="tight")
+fig.savefig("../img/grads%s.pdf" % pre, bbox_inches="tight")
