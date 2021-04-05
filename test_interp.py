@@ -1,17 +1,10 @@
 """
 Test the interpolator against CCL's default cosmology emulator (CAMB).
 
-We test the approximation at the grid nodes and expect
-high accuracy, but also test it at the midpoints between
-the nodes (centres of ND cubes).
-
-#FIXME: blocksize decreases accuracy at the BAO scales??
-
 #TODO: sparse distance matrices to overcome RAM issue (KD-tree not working)
 #TODO: sklearn optimal epsilon for all scales ??? (On^2)
 #TODO: check Fortran spline routines
 #TODO: interpolate slightly outside range to eliminate Runge's phenomenon
-#TODO: save/load interpolator
 #TODO: overcome memoery constraint by finding neighbours within distance of bump RBF
 #TODO: run profiler
 
@@ -48,20 +41,6 @@ the nodes (centres of ND cubes).
 ==============================================================================
 
 ## ACCURACY ##
-
-1) 2 cosmo pars; narrow; cosmo nodes; ka nodes
-errors: (min,avg,max)=(5.01e-8,1.30e-7,2.67e-7)
-------------------------------------------------------------------------------
-2) 2 cosmo pars; narrow; cosmo antinodes; ka nodes
-errors: (min,avg,max)=(9.35e-05,2.43e-04,4.36e-04)
-------------------------------------------------------------------------------
-3) 2 cosmo pars; narrow; cosmo nodes; ka antinodes
-errors: (min,avg,max)=(6.26e-03,6.27e-03,6.28e-03)
-------------------------------------------------------------------------------
-4) 2 cosmo pars; narrow; cosmo antinodes; ka antinodes
-errors: (min,avg,max)=(6.24e-03,6.35e-03,6.58e-03)
-------------------------------------------------------------------------------
-5) 2 cosmo pars; wide; cosmo antinodes; ka nodes
 """
 import numpy as np
 from numpy.random import uniform
@@ -74,19 +53,21 @@ from utils import linear_matter_power as linpow
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
-priors = {"Omega_c": [0.15, 0.30],
-          "h"      : [0.55, 0.91],
-          "Omega_b": [0.03, 0.07]}
+priors = {"Omega_c": [0.10, 0.50],
+          "h"      : [0.50, 0.90],
+          "Omega_b": [0.02, 0.08]}
 
 
 testnum = 5
 test_cosmo = "antinodes"  # {'nodes', 'antinodes', 'random'} - cosmo space
-test_ak = "antinodes"  # {'nodes', 'antinodes'} - (k,a)-space
+test_ak = "nodes"  # {'nodes', 'antinodes'} - (k,a)-space
 
 ## SAMPLER ##
-samples = 500# 7**len(priors.keys())
+samples = 100# 7**len(priors.keys())
 k_arr = np.logspace(-4, 2, 512)
-a_arr = np.linspace(0.1, 1, 16)
+# k_new = np.linspace(0.01, 0.35, 128)
+# k_arr = np.sort(np.r_[k_arr, k_new])
+a_arr = np.linspace(0.01, 1, 16)
 
 s = Sampler(priors, k_arr, a_arr,
             cosmo_default=None,
@@ -95,16 +76,17 @@ s = Sampler(priors, k_arr, a_arr,
             overwrite=False)
 s.sample()
 
-s.interpolate(a_blocksize=4,
-              k_blocksize=4,
+s.interpolate(a_blocksize=1,
+              k_blocksize=1,
               interpf="gaussian",
-              epsilon=0.03,
-              pStep=0.01)
+              scale=3)
 
-# save
-s.save()
-# load
-interp = np.load(s.get_fname("interp"), allow_pickle=True).item()
+# # save
+# s.save()
+# # load
+# interp = np.load(s.get_fname("interp"), allow_pickle=True).item()
+interp = s
+
 
 ## PREP TESTING ##
 if "nodes" in test_cosmo:
@@ -117,9 +99,10 @@ elif test_cosmo == "random":
     # When the number of cosmological dimensions is large,
     # sample randomly from points within the cosmological
     # parameter space. This gives an estimate of the error.
-    vals = [np.sort(uniform(*priors[par], size=4)) for par in priors.keys()]
-    mgrid = np.meshgrid(*vals)
-    points = np.vstack(list(map(np.ravel, mgrid))).T
+    num = 100
+    points = np.vstack([[uniform(*priors[par])
+                         for par in priors.keys()]
+                        for i in range(num)])
 
 if test_ak == "nodes":
     a_arr = interp.a_arr
@@ -141,9 +124,9 @@ for pnt in points:
     CCL = linpow(cosmo, k_arr, a_arr)
     # COSMOFAST
     csm = Cosmology(interp, kw)
-    NICK = csm.linear_matter_power(k_arr, a_arr)
+    EMU = csm.linear_matter_power(k_arr, a_arr)
     # errors
-    d = 1-NICK/CCL
+    d = 1-EMU/CCL
     res.append(d)
     print(np.fabs(d).max())
 
