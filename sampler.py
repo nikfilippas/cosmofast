@@ -17,7 +17,7 @@ from utils import linear_matter_power as linpow
 
 class Sampler(object):
     """
-    Interpolator of the cosmological linear matter power spectrum.
+    Sample and interpolate the cosmological linear matter power spectrum.
 
     Nodes for the cosmological hypercube are computed using weights.
     Weights aim to increase efficiency by allocating more samples
@@ -242,14 +242,13 @@ class Sampler(object):
 
     def _initialize(self,
                     a_blocksize, k_blocksize,
-                    interpf, epsilon,
-                    rescale, pStep):
+                    interpf, scale):
         self.a_blocksize = a_blocksize
         self.k_blocksize = k_blocksize
         self.interpf = interpf
-        self.epsilon = epsilon
-        self.rescale = rescale
-        self.pStep = pStep
+        self.scale = scale
+        self.pStep = 0.01  # global uniform stepsize
+        self.epsilon = self.scale*self.pStep
 
         if self.apts % self.a_blocksize != 0:
             raise ValueError("blocksize should divide a_arr exactly")
@@ -277,8 +276,7 @@ class Sampler(object):
 
     def interpolate(self,
                     a_blocksize=1, k_blocksize=1,
-                    interpf="gaussian", epsilon=None,
-                    rescale=True, pStep=0.01):
+                    interpf="gaussian", scale=3):
         """
         Interpolate the sampled points.
 
@@ -295,21 +293,20 @@ class Sampler(object):
             Bin `k_arr` in blocks of that size, as in `a_blocksize`.
         interpf : ``str``
             The radial basis function. See `scipy.interpolate.Rbf`.
-        epsilon : ``float``
-            Adjustment knob for gaussian and multiquadric functions.
-            A good start for cosmological interpolation is 50x the
-            average distance between the nodes.
-            See `scipy.interpolate.Rbf`.
-        rescale: ``bool``
-            Rescale all interpolated dimensions to uniform stepsize.
-        pStep : ``float``
-            Uniform stepsize for all interpolated parameters.
+        scale : ``float``
+            Length-scale parameter passed into the RBF kernel.
 
 
         Attributes
         ----------
         F : ``numpy.array`` of ``scipy.interpolate.rbf.Rbf`` (apts, kpts)
             Array containing the interpolators for each (k, a) combination.
+        pStep : ``float``
+            Uniform stepsize for all interpolated parameters.
+        epsilon : ``float``
+            Adjustment knob for gaussian and multiquadric functions.
+            Calculated from `scale` through `pStep`.
+
         rescale : ``numpy.array``
             Rescale by factor. All interpolated dimensions are rescaled
             before interpolation to get an n-spherical kerne with the same
@@ -325,9 +322,7 @@ class Sampler(object):
             (float64 - equivalent to C double). In that case LU decomposition
             fails and the pseudoinverse is computed instead.
         """
-        self._initialize(a_blocksize, k_blocksize,
-                         interpf, epsilon,
-                         rescale, pStep)
+        self._initialize(a_blocksize, k_blocksize, interpf, scale)
 
         def _rescale(points, a_arr, lk_arr):
             """Collect the entire rescaling routine in here."""
@@ -365,8 +360,7 @@ class Sampler(object):
         points = [pnts.tolist() for pnts in self.points]
         a_arr = self.a_arr
         lk_arr = np.log10(self.k_arr)
-        if self.rescale:
-            points, a_arr, lk_arr =  _rescale(points, a_arr, lk_arr)
+        points, a_arr, lk_arr =  _rescale(points, a_arr, lk_arr)
 
         # determine a, k number of blocks in each dimension
         Na = self.apts // self.a_blocksize
@@ -420,5 +414,8 @@ class Sampler(object):
     def save(self, path=None):
         """Save the class instance to an '.npy' file with pickle."""
         if path is None:
-            path = self.get_fname("interp")
+            # blocks = "_ablk_%d_kblk_%d" % (self.a_blocksize, self.k_blocksize)
+            blocks = ""
+            path = self.get_fname("interp"+blocks)
+            self.interp_path = path
         np.save(path, self, allow_pickle=True)
