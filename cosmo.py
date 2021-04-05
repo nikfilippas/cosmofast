@@ -52,12 +52,9 @@ class Cosmology(object):
         (k,a)-space interpolator for input cosmological parameters.
     """
 
-    def __init__(self, interp, kw, a_Chb=False, k_Chb=False):
+    def __init__(self, interp, kw):
         self.interp = interp
         self.kw = kw
-        # interp
-        self.a_Chb = a_Chb
-        self.k_Chb = k_Chb
 
         self.vals = [self.kw[par] for par in self.interp.pars]
         self._check_compatibility(self.vals)
@@ -162,18 +159,6 @@ class Cosmology(object):
 
         return err.squeeze()
 
-    @classmethod
-    def Chebyshev(Cosmology, arr):
-        """Map the input array to Chebyshev-Lovatto nodes to supress
-        Runge's phenomenon when interpolating.
-
-        Inspired by Davide Poggiali's 'FakeNodes':
-        https://github.com/pog87/FakeNodes
-        """
-        a, b = arr.min(), arr.max()
-        CL = (b-a)/2 * np.cos(np.pi*(arr-a)/(b-a)) + (a+b)/2
-        return CL[::-1]  # reverse the mapping
-
     def interpolate(self):
         """Interpolate (k,a) space for faster evaluation time."""
         vals = np.atleast_1d(self.vals)
@@ -183,21 +168,10 @@ class Cosmology(object):
         # Eisenstein & Hu approximation
         cosmo = ccl.Cosmology(**self.kw, transfer_function="eisenstein_hu")
         Pk = linpow(cosmo, k_arr, a_arr)
-        Pk /= self.callF(*vals, a_arr, k_arr)
+        Pk = Pk/self.callF(*vals, a_arr, k_arr)  # slow division shortcut!
 
-        # rescale using approximate Chebyshev nodes?
-        if self.a_Chb:
-            self._aF = Cosmology.Chebyshev
-        else:
-            self._aF = lambda x: x
-
-        if self.k_Chb:
-            self._kF = Cosmology.Chebyshev
-        else:
-            self._kF = lambda x: x
-
-        self.Fka = RectBivariateSpline(self._aF(a_arr),
-                                       self._kF(np.log10(k_arr)),
+        self.Fka = RectBivariateSpline(a_arr,
+                                       np.log10(k_arr),
                                        np.log10(Pk))
 
     def linear_matter_power(self, k_arr, a_arr):
@@ -205,5 +179,5 @@ class Cosmology(object):
         (almost) the same function call as `pyccl.linear_matter_power`.
         Call the (k,a)-space interpolator on any a and k.
         """
-        lPk = self.Fka(self._aF(a_arr), self._kF(np.log10(k_arr)))
+        lPk = self.Fka(a_arr, np.log10(k_arr))
         return 10**lPk.squeeze()
